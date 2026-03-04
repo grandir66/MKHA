@@ -1,0 +1,73 @@
+cluster:
+  name: mikrotik-ha-cluster
+  sync_interval_seconds: 60
+  failover_cooldown_seconds: 30
+routers:
+  master:
+    name: router-a
+    api_url: http://192.168.1.1/rest
+    api_user: ha-sync
+    api_password: changeme
+    ssh_port: 22
+    ssh_enabled: true
+    ssh_key_file: ''
+    variables_file: router_a.yaml
+    vrrp_priority_master: 150
+    vrrp_priority_backup: 100
+    vrrp_priority_demoted: 50
+  backup:
+    name: router-b
+    api_url: http://192.168.1.2/rest
+    api_user: ha-sync
+    api_password_env: ROUTER_B_PASSWORD
+    ssh_port: 22
+    ssh_enabled: true
+    ssh_key_file: ''
+    variables_file: router_b.yaml
+    vrrp_priority_master: 150
+    vrrp_priority_backup: 100
+    vrrp_priority_demoted: 50
+quorum:
+  witness:
+    type: ping
+    target: 8.8.8.8
+    timeout_ms: 2000
+    fail_threshold: 3
+  health_check:
+    interval_seconds: 5
+    api_timeout_ms: 3000
+    ping_timeout_ms: 1000
+sync:
+  enabled_groups:
+  - interfaces
+  - ip_addressing
+  - firewall
+  - routing
+  - dhcp_dns
+  - vpn
+  - scripts
+  - queues
+web:
+  host: 0.0.0.0
+  port: 8080
+  auth_token: ''
+  auth_token_env: MKHA_AUTH_TOKEN
+notifications:
+  webhook_url: ''
+  telegram_bot_token: ''
+  telegram_chat_id: ''
+  email_smtp_host: ''
+  email_smtp_port: 587
+  email_from: ''
+  email_to: ''
+provisioning:
+  blank_threshold: 5
+  orchestrator_url: ''
+  api_user: ha-sync
+  api_group: full
+  disable_services:
+  - telnet
+  - ftp
+  - www
+  deploy_scripts: true
+  health_check_interval: 5s

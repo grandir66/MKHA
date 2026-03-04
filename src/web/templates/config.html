@@ -1,0 +1,351 @@
+{% extends "base.html" %}
+{% block title %}Router Config{% endblock %}
+{% block content %}
+<h1>Router Configuration</h1>
+<p>View the full textual configuration from both routers, organized by sections, side by side.</p>
+
+<!-- Controls -->
+<div class="actions-bar" style="margin-bottom:1rem">
+    <button class="btn btn-primary" onclick="loadBothExports()">Load Configuration</button>
+    <button class="btn btn-secondary" onclick="expandAll()">Expand All</button>
+    <button class="btn btn-secondary" onclick="collapseAll()">Collapse All</button>
+    <div style="flex:1"></div>
+    <input type="text" id="section-search" placeholder="Search sections..."
+           oninput="filterSections(this.value)"
+           style="padding:0.4rem 0.75rem; background:var(--bg); color:var(--text);
+                  border:1px solid var(--border); border-radius:4px; font-size:0.85rem; width:240px;">
+</div>
+
+<!-- Status bar -->
+<div id="export-status" class="card" style="display:none">
+    <div class="config-grid">
+        <div id="export-status-master"></div>
+        <div id="export-status-backup"></div>
+    </div>
+</div>
+
+<!-- Sections container -->
+<div id="config-sections"></div>
+
+<!-- Quick device config (VRRP, DNS, NTP) -->
+<div class="card" style="margin-top:1.5rem">
+    <h3>Quick Device Settings</h3>
+    <p style="color:var(--text-dim); font-size:0.85rem">Edit per-device settings (VRRP priority, identity, DNS, NTP). These are NOT auto-synced.</p>
+    <div class="config-grid">
+        <div>
+            <h4>Master</h4>
+            <div id="config-master">Loading...</div>
+        </div>
+        <div>
+            <h4>Backup</h4>
+            <div id="config-backup">Loading...</div>
+        </div>
+    </div>
+</div>
+
+<!-- Variable Mapping -->
+<div class="card">
+    <h3>Variable Mapping</h3>
+    <table id="variables-table" class="data-table">
+        <thead><tr><th>Variable</th><th>Master Value</th><th>Slave Value</th></tr></thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<script>
+/* ---- State ---- */
+let _masterExport = null;
+let _backupExport = null;
+
+/* ---- Load exports ---- */
+async function loadBothExports() {
+    const statusEl = document.getElementById('export-status');
+    const masterStatusEl = document.getElementById('export-status-master');
+    const backupStatusEl = document.getElementById('export-status-backup');
+    const sectionsEl = document.getElementById('config-sections');
+
+    statusEl.style.display = '';
+    masterStatusEl.innerHTML = '<span class="text-warn">⏳ Loading master config...</span>';
+    backupStatusEl.innerHTML = '<span class="text-warn">⏳ Loading backup config...</span>';
+    sectionsEl.innerHTML = '';
+
+    // Fetch both in parallel
+    const [masterRes, backupRes] = await Promise.allSettled([
+        fetchExport('master'),
+        fetchExport('backup'),
+    ]);
+
+    _masterExport = masterRes.status === 'fulfilled' ? masterRes.value : null;
+    _backupExport = backupRes.status === 'fulfilled' ? backupRes.value : null;
+
+    // Update status
+    masterStatusEl.innerHTML = renderExportStatus(_masterExport, 'Master');
+    backupStatusEl.innerHTML = renderExportStatus(_backupExport, 'Backup');
+
+    // Render sections
+    renderSections();
+}
+
+async function fetchExport(role) {
+    const res = await fetch(`/api/config/export/${role}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+}
+
+function renderExportStatus(data, label) {
+    if (!data) return `<span class="text-err">${label}: Failed to load</span>`;
+    if (data.error) return `<span class="text-err">${label}: ${data.error}</span>`;
+
+    const src = data.source === 'ssh'
+        ? '<span class="badge badge-ok">SSH Export</span>'
+        : '<span class="badge" style="background:var(--warn);color:#000">REST Fallback</span>';
+    const secCount = (data.sections || []).filter(s => s.path !== '# header').length;
+    const cmdCount = (data.sections || []).reduce((sum, s) => sum + (s.count || 0), 0);
+
+    return `<strong>${label}</strong> — ${data.identity || '?'} — v${data.version || '?'} ` +
+        `${src} ` +
+        `<span class="text-dim">| ${secCount} sections, ${cmdCount} commands</span>`;
+}
+
+/* ---- Render sections side-by-side ---- */
+function renderSections() {
+    const el = document.getElementById('config-sections');
+    if (!_masterExport && !_backupExport) {
+        el.innerHTML = '<p class="text-dim">No data loaded.</p>';
+        return;
+    }
+
+    const mSections = (_masterExport && _masterExport.sections) || [];
+    const bSections = (_backupExport && _backupExport.sections) || [];
+
+    // Build maps by path
+    const mMap = {};
+    mSections.forEach(s => { mMap[s.path] = s; });
+    const bMap = {};
+    bSections.forEach(s => { bMap[s.path] = s; });
+
+    // Merge all section paths in order (master first, then backup-only)
+    const allPaths = [];
+    const seen = new Set();
+    for (const s of mSections) {
+        if (!seen.has(s.path)) { allPaths.push(s.path); seen.add(s.path); }
+    }
+    for (const s of bSections) {
+        if (!seen.has(s.path)) { allPaths.push(s.path); seen.add(s.path); }
+    }
+
+    let html = '';
+    for (const path of allPaths) {
+        if (path === '# header') continue; // Skip header
+
+        const mSec = mMap[path];
+        const bSec = bMap[path];
+        const mCnt = mSec ? mSec.count : 0;
+        const bCnt = bSec ? bSec.count : 0;
+        const mCmds = mSec ? mSec.commands : [];
+        const bCmds = bSec ? bSec.commands : [];
+
+        // Determine status
+        const onlyMaster = mSec && !bSec;
+        const onlyBackup = !mSec && bSec;
+        const diff = mCnt !== bCnt;
+
+        let statusIcon = '';
+        if (onlyMaster) statusIcon = '<span class="text-ok" title="Only on master">●</span>';
+        else if (onlyBackup) statusIcon = '<span class="text-err" title="Only on backup">●</span>';
+        else if (diff) statusIcon = '<span class="text-warn" title="Different count">Δ</span>';
+        else statusIcon = '<span class="text-ok" title="Match">✓</span>';
+
+        html += `<div class="export-section" data-path="${escHtml(path)}">`;
+        html += `<div class="export-section-header" onclick="toggleExportSection(this)">`;
+        html += `<div class="export-section-title">`;
+        html += `<span class="compare-toggle collapsed">▼</span> `;
+        html += `${statusIcon} <code>${escHtml(path)}</code>`;
+        html += `</div>`;
+        html += `<div class="export-section-counts">`;
+        html += `<span class="master-cnt">M: ${mCnt}</span>`;
+        html += `<span class="slave-cnt">B: ${bCnt}</span>`;
+        html += `</div>`;
+        html += `</div>`;
+
+        // Body (collapsed by default)
+        html += `<div class="export-section-body" style="display:none">`;
+        html += `<div class="export-pair-grid">`;
+
+        // Master column
+        html += `<div class="export-col master-col">`;
+        if (mCmds.length > 0) {
+            html += '<pre class="export-code">';
+            mCmds.forEach(cmd => {
+                html += renderExportLine(cmd) + '\n';
+            });
+            html += '</pre>';
+        } else {
+            html += '<div class="compare-empty">— not present —</div>';
+        }
+        html += '</div>';
+
+        // Backup column
+        html += `<div class="export-col backup-col">`;
+        if (bCmds.length > 0) {
+            html += '<pre class="export-code">';
+            bCmds.forEach(cmd => {
+                html += renderExportLine(cmd) + '\n';
+            });
+            html += '</pre>';
+        } else {
+            html += '<div class="compare-empty">— not present —</div>';
+        }
+        html += '</div>';
+
+        html += '</div></div></div>';
+    }
+
+    if (!html) {
+        html = '<p class="text-dim" style="padding:1rem">No sections loaded. Click "Load Configuration".</p>';
+    }
+
+    el.innerHTML = html;
+}
+
+function renderExportLine(line) {
+    // Syntax highlight RouterOS export lines
+    const esc = escHtml(line);
+    if (line.startsWith('#')) {
+        return `<span class="export-comment">${esc}</span>`;
+    }
+    if (line.startsWith('set ') || line.startsWith('add ')) {
+        const verb = line.substring(0, line.indexOf(' '));
+        const rest = esc.substring(verb.length);
+        // Highlight key=value pairs
+        const highlighted = rest.replace(/([\w-]+)=/g, '<span class="export-key">$1</span>=');
+        return `<span class="export-verb">${verb}</span>${highlighted}`;
+    }
+    return esc;
+}
+
+function escHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* ---- Section toggle/expand/collapse ---- */
+function toggleExportSection(headerEl) {
+    const body = headerEl.nextElementSibling;
+    const toggle = headerEl.querySelector('.compare-toggle');
+    if (body.style.display === 'none') {
+        body.style.display = '';
+        toggle.classList.remove('collapsed');
+    } else {
+        body.style.display = 'none';
+        toggle.classList.add('collapsed');
+    }
+}
+
+function expandAll() {
+    document.querySelectorAll('.export-section-body').forEach(b => { b.style.display = ''; });
+    document.querySelectorAll('.export-section-header .compare-toggle').forEach(t => { t.classList.remove('collapsed'); });
+}
+
+function collapseAll() {
+    document.querySelectorAll('.export-section-body').forEach(b => { b.style.display = 'none'; });
+    document.querySelectorAll('.export-section-header .compare-toggle').forEach(t => { t.classList.add('collapsed'); });
+}
+
+function filterSections(query) {
+    const q = query.toLowerCase();
+    document.querySelectorAll('.export-section').forEach(sec => {
+        const path = (sec.dataset.path || '').toLowerCase();
+        // Also search inside commands text
+        const body = sec.querySelector('.export-code');
+        const text = body ? body.textContent.toLowerCase() : '';
+        sec.style.display = (!q || path.includes(q) || text.includes(q)) ? '' : 'none';
+    });
+}
+
+/* ---- Quick device settings (legacy) ---- */
+async function loadConfig(role) {
+    try {
+        const res = await fetch(`/api/config/${role}`);
+        const data = await res.json();
+        renderQuickConfig(role, data);
+    } catch(e) {
+        document.getElementById('config-' + role).textContent = 'Error: ' + e.message;
+    }
+}
+
+function renderQuickConfig(role, data) {
+    const el = document.getElementById('config-' + role);
+    let html = '';
+
+    if (data.identity) {
+        const id = data.identity[0] || {};
+        html += `<div class="config-section"><h4>Identity</h4><p>${id.name || '-'}</p></div>`;
+    }
+
+    if (data.vrrp && data.vrrp.length > 0) {
+        html += '<div class="config-section"><h4>VRRP Interfaces</h4><table class="data-table">';
+        html += '<tr><th>Name</th><th>Interface</th><th>VRID</th><th>Priority</th><th>VIP</th><th></th></tr>';
+        data.vrrp.forEach(v => {
+            html += `<tr><td>${v.name||'-'}</td><td>${v.interface||'-'}</td><td>${v.vrid||'-'}</td>` +
+                    `<td><input type="number" value="${v.priority||100}" style="width:60px" id="pri-${role}-${v['.id']}"></td>` +
+                    `<td>${v.address||'-'}</td>` +
+                    `<td><button class="btn btn-sm" onclick="setVRRPPriority('${role}','${v['.id']}')">Set</button></td></tr>`;
+        });
+        html += '</table></div>';
+    }
+
+    if (data.dns) {
+        const dns = data.dns[0] || {};
+        html += `<div class="config-section"><h4>DNS</h4><p>Servers: ${dns.servers || '-'}</p></div>`;
+    }
+
+    if (data.ntp) {
+        const ntp = data.ntp[0] || {};
+        html += `<div class="config-section"><h4>NTP</h4><p>Servers: ${ntp.servers || ntp['server-dns-names'] || '-'}</p></div>`;
+    }
+
+    if (data.users && data.users.length > 0) {
+        html += '<div class="config-section"><h4>Users</h4>';
+        data.users.forEach(u => {
+            html += `<code>${u.name||'-'}</code> (${u.group||'-'}) `;
+        });
+        html += '</div>';
+    }
+
+    el.innerHTML = html || '<span class="text-dim">No data / Unreachable</span>';
+}
+
+async function setVRRPPriority(role, vrrpId) {
+    const input = document.getElementById(`pri-${role}-${vrrpId}`);
+    const priority = parseInt(input.value);
+    if (isNaN(priority) || priority < 1 || priority > 254) {
+        alert('Priority must be between 1 and 254');
+        return;
+    }
+    await fetch(`/api/vrrp/${role}/${vrrpId}/priority`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({priority: priority})
+    });
+    alert(`Priority set to ${priority}`);
+}
+
+async function loadVariables() {
+    try {
+        const res = await fetch('/api/variables');
+        const vars = await res.json();
+        const tbody = document.querySelector('#variables-table tbody');
+        tbody.innerHTML = vars.map(v =>
+            `<tr class="${v.changed === 'True' ? 'var-changed' : ''}">` +
+            `<td>${v.variable}</td><td><code>${v.master_value}</code></td>` +
+            `<td><code>${v.slave_value}</code></td></tr>`
+        ).join('');
+    } catch(e) {}
+}
+
+/* ---- Init ---- */
+loadConfig('master');
+loadConfig('backup');
+loadVariables();
+</script>
+{% endblock %}

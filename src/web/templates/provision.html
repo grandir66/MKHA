@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Provisioning{% endblock %}
+{% block content %}
+<h1>Day Zero Provisioning</h1>
+<p>Bootstrap a blank secondary router as a functional backup of the master.</p>
+
+<div class="actions-bar">
+    <button class="btn btn-secondary" onclick="runPreflight()">Pre-flight Check</button>
+    <button class="btn btn-primary" onclick="generatePlan()">Generate Plan</button>
+    <label style="margin-left:1rem"><input type="checkbox" id="force-check"> Force (non-blank router)</label>
+</div>
+
+<!-- Pre-flight / Plan Results -->
+<div class="card" id="preflight-card" style="display:none">
+    <h3>Pre-flight Results</h3>
+    <div id="preflight-content"></div>
+</div>
+
+<div class="card" id="plan-card" style="display:none">
+    <h3>Provisioning Plan</h3>
+    <div id="plan-content"></div>
+    <div class="actions-bar" style="margin-top:1rem">
+        <button class="btn btn-danger" onclick="applyProvisioning()">Apply Provisioning</button>
+        <label style="margin-left:1rem"><input type="checkbox" id="skip-verify"> Skip verification</label>
+    </div>
+</div>
+
+<!-- Progress -->
+<div class="card" id="progress-card" style="display:none">
+    <h3>Provisioning Progress</h3>
+    <div class="progress-bar-container">
+        <div class="progress-bar" id="progress-bar" style="width:0%">0%</div>
+    </div>
+    <div id="progress-phase" class="detail"></div>
+    <div id="progress-steps"></div>
+</div>
+
+<!-- Final Report -->
+<div class="card" id="report-card" style="display:none">
+    <h3>Provisioning Report</h3>
+    <div id="report-content"></div>
+</div>
+
+<script>
+async function runPreflight() {
+    document.getElementById('preflight-card').style.display = '';
+    document.getElementById('preflight-content').innerHTML = '<span class="text-warn">Running checks...</span>';
+    const force = document.getElementById('force-check').checked;
+
+    try {
+        const res = await fetch('/api/provision/plan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({force})
+        });
+        const data = await res.json();
+        renderPreflight(data.preflight);
+    } catch(e) {
+        document.getElementById('preflight-content').innerHTML = `<span class="text-err">Error: ${e.message}</span>`;
+    }
+}
+
+function renderPreflight(pf) {
+    const el = document.getElementById('preflight-content');
+    const items = [
+        {label: 'Master reachable', ok: pf.secondary_reachable !== false && pf.master_reachable,
+         detail: pf.master_version ? `v${pf.master_version} (${pf.master_identity})` : 'N/A'},
+        {label: 'Secondary reachable', ok: pf.secondary_reachable,
+         detail: pf.secondary_version ? `v${pf.secondary_version} (${pf.secondary_identity})` : 'N/A'},
+        {label: 'Version compatible', ok: pf.version_compatible, detail: ''},
+        {label: 'Secondary is blank', ok: pf.secondary_is_blank,
+         detail: `${pf.secondary_config_items} config items`},
+    ];
+
+    el.innerHTML = items.map(i =>
+        `<div class="check-item ${i.ok ? 'check-ok' : 'check-fail'}">
+            <span class="check-icon">${i.ok ? '&#10003;' : '&#10007;'}</span>
+            <strong>${i.label}</strong> ${i.detail}
+        </div>`
+    ).join('') +
+    (pf.errors.length ? `<div class="text-err" style="margin-top:.5rem">Errors: ${pf.errors.join('; ')}</div>` : '') +
+    (pf.warnings.length ? `<div class="text-warn" style="margin-top:.5rem">Warnings: ${pf.warnings.join('; ')}</div>` : '') +
+    `<div class="text-${pf.passed ? 'ok' : 'err'}" style="margin-top:.5rem; font-weight:bold">
+        ${pf.passed ? 'Pre-flight PASSED' : 'Pre-flight FAILED'}
+    </div>`;
+}
+
+async function generatePlan() {
+    document.getElementById('plan-card').style.display = '';
+    document.getElementById('plan-content').innerHTML = '<span class="text-warn">Generating plan...</span>';
+    document.getElementById('preflight-card').style.display = '';
+    const force = document.getElementById('force-check').checked;
+
+    try {
+        const res = await fetch('/api/provision/plan', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({force})
+        });
+        const data = await res.json();
+        renderPreflight(data.preflight);
+        renderPlan(data);
+    } catch(e) {
+        document.getElementById('plan-content').innerHTML = `<span class="text-err">Error: ${e.message}</span>`;
+    }
+}
+
+function renderPlan(plan) {
+    const el = document.getElementById('plan-content');
+    if (!plan.preflight.passed) {
+        el.innerHTML = '<span class="text-err">Cannot generate plan: pre-flight failed</span>';
+        return;
+    }
+
+    let html = '';
+
+    // System changes
+    if (plan.system_changes.length > 0) {
+        html += '<h4>System Configuration</h4>';
+        html += plan.system_changes.map(c =>
+            `<div class="plan-item"><strong>${c.section}</strong>: ${c.action} ` +
+            `<code>${c.current}</code> &rarr; <code>${c.proposed}</code></div>`
+        ).join('');
+    }
+
+    // Network diff
+    const net = plan.network_diff_summary;
+    if (net.total_changes > 0) {
+        html += `<h4>Network Sync (${net.total_changes} changes)</h4>`;
+        html += (net.sections || []).map(s =>
+            `<div class="plan-item"><strong>${s.name}</strong>: ` +
+            `+${s.additions} -${s.removals} ~${s.updates} ` +
+            (s.moves > 0 ? `&#8693;${s.moves}` : '') + '</div>'
+        ).join('');
+    } else {
+        html += '<h4>Network Sync</h4><div class="plan-item text-ok">No changes needed</div>';
+    }
+
+    // VRRP
+    if (plan.vrrp_instances.length > 0) {
+        html += `<h4>VRRP Instances (${plan.vrrp_instances.length} to create)</h4>`;
+        html += plan.vrrp_instances.map(v =>
+            `<div class="plan-item">Create <strong>${v.name}</strong> ` +
+            `VRID=${v.vrid} interface=${v.interface} priority=${v.priority}</div>`
+        ).join('');
+    }
+
+    // Scripts
+    if (plan.scripts.length > 0) {
+        html += `<h4>HA Scripts</h4>`;
+        html += plan.scripts.map(s => `<div class="plan-item">Deploy: ${s}</div>`).join('');
+    }
+    if (plan.schedulers.length > 0) {
+        html += plan.schedulers.map(s =>
+            `<div class="plan-item">Scheduler: ${s.name} (interval: ${s.interval})</div>`
+        ).join('');
+    }
+
+    el.innerHTML = html || '<span class="text-ok">Nothing to provision</span>';
+}
+
+async function applyProvisioning() {
+    if (!confirm('Apply provisioning to the secondary router? This will modify its configuration.')) return;
+
+    const force = document.getElementById('force-check').checked;
+    const skipVerify = document.getElementById('skip-verify').checked;
+
+    document.getElementById('progress-card').style.display = '';
+    document.getElementById('progress-steps').innerHTML = '<span class="text-warn">Starting...</span>';
+
+    try {
+        const res = await fetch('/api/provision/apply', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({force, skip_verification: skipVerify})
+        });
+        const report = await res.json();
+        renderReport(report);
+    } catch(e) {
+        document.getElementById('progress-steps').innerHTML =
+            `<span class="text-err">Error: ${e.message}</span>`;
+    }
+}
+
+function renderReport(report) {
+    // Update progress bar
+    const bar = document.getElementById('progress-bar');
+    bar.style.width = '100%';
+    bar.textContent = '100%';
+
+    // Show report
+    document.getElementById('report-card').style.display = '';
+    const el = document.getElementById('report-content');
+
+    const statusClass = report.success ? 'text-ok' : 'text-err';
+    let html = `<div class="${statusClass}" style="font-size:1.2em; margin-bottom:1rem">
+        ${report.success ? 'PROVISIONING COMPLETE' : 'PROVISIONING FAILED'}
+        (${(report.duration_ms / 1000).toFixed(1)}s)
+    </div>`;
+
+    // Steps table
+    html += '<table class="data-table"><thead><tr><th>Phase</th><th>Step</th><th>Status</th><th>Detail</th><th>Time</th></tr></thead><tbody>';
+    report.steps.forEach(s => {
+        const icon = {completed: '&#10003;', failed: '&#10007;', skipped: '&#8212;', pending: '&#9711;', running: '&#9881;'}[s.status] || '';
+        const cls = {completed: 'text-ok', failed: 'text-err', skipped: 'text-warn'}[s.status] || '';
+        html += `<tr><td>${s.phase}</td><td>${s.description}</td>` +
+                `<td class="${cls}">${icon} ${s.status}</td>` +
+                `<td>${s.error || s.detail || ''}</td>` +
+                `<td>${s.duration_ms > 0 ? s.duration_ms.toFixed(0) + 'ms' : ''}</td></tr>`;
+    });
+    html += '</tbody></table>';
+
+    if (report.errors.length) {
+        html += '<h4 class="text-err">Errors</h4><ul>';
+        report.errors.forEach(e => html += `<li>${e}</li>`);
+        html += '</ul>';
+    }
+    if (report.warnings.length) {
+        html += '<h4 class="text-warn">Warnings</h4><ul>';
+        report.warnings.forEach(w => html += `<li>${w}</li>`);
+        html += '</ul>';
+    }
+
+    el.innerHTML = html;
+
+    // Also update steps in progress section
+    document.getElementById('progress-steps').innerHTML = report.steps.map(s => {
+        const icon = {completed: '&#10003;', failed: '&#10007;', skipped: '&#8212;'}[s.status] || '&#9711;';
+        const cls = {completed: 'text-ok', failed: 'text-err', skipped: 'text-warn'}[s.status] || '';
+        return `<div class="step-item ${cls}">${icon} ${s.description}</div>`;
+    }).join('');
+}
+</script>
+{% endblock %}

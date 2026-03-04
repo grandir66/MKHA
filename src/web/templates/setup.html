@@ -1,0 +1,980 @@
+{% extends "base.html" %}
+{% block title %}Setup{% endblock %}
+{% block content %}
+<h1>Cluster Setup</h1>
+<p>Configure router connections, variable mappings, and sync section toggles.</p>
+
+<!-- Router Connections -->
+<div class="config-grid">
+    <!-- MASTER -->
+    <div class="card">
+        <h3>Master Router</h3>
+        <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="master-name" placeholder="router-a">
+        </div>
+        <div class="form-group">
+            <label>API URL</label>
+            <input type="text" id="master-url" placeholder="https://10.0.0.1/rest">
+        </div>
+        <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="master-user" placeholder="admin">
+        </div>
+        <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="master-pass" placeholder="Leave empty to keep current">
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1">
+                <label>SSH Port</label>
+                <input type="number" id="master-ssh-port" value="22" min="1" max="65535">
+            </div>
+            <div class="form-group" style="flex:1">
+                <label class="toggle-label">
+                    <input type="checkbox" id="master-ssh-enabled" checked>
+                    SSH Enabled
+                </label>
+            </div>
+        </div>
+        <div class="actions-bar">
+            <button class="btn btn-secondary" onclick="testConnection('master')">Test Connection</button>
+            <button class="btn btn-primary" onclick="saveRouterConfig('master')">Save Master</button>
+        </div>
+        <div id="master-test-result" class="test-result"></div>
+
+        <!-- Live router info panel -->
+        <div id="master-live-info" class="live-info-panel" style="display:none; margin-top:1rem">
+            <div id="master-live-header"></div>
+            <div id="master-live-sections"></div>
+        </div>
+    </div>
+
+    <!-- BACKUP -->
+    <div class="card">
+        <h3>Backup Router</h3>
+        <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="backup-name" placeholder="router-b">
+        </div>
+        <div class="form-group">
+            <label>API URL</label>
+            <input type="text" id="backup-url" placeholder="https://10.0.0.2/rest">
+        </div>
+        <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="backup-user" placeholder="admin">
+        </div>
+        <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="backup-pass" placeholder="Leave empty to keep current">
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1">
+                <label>SSH Port</label>
+                <input type="number" id="backup-ssh-port" value="22" min="1" max="65535">
+            </div>
+            <div class="form-group" style="flex:1">
+                <label class="toggle-label">
+                    <input type="checkbox" id="backup-ssh-enabled" checked>
+                    SSH Enabled
+                </label>
+            </div>
+        </div>
+        <div class="actions-bar">
+            <button class="btn btn-secondary" onclick="testConnection('backup')">Test Connection</button>
+            <button class="btn btn-primary" onclick="saveRouterConfig('backup')">Save Backup</button>
+        </div>
+        <div id="backup-test-result" class="test-result"></div>
+
+        <!-- Live router info panel -->
+        <div id="backup-live-info" class="live-info-panel" style="display:none; margin-top:1rem">
+            <div id="backup-live-header"></div>
+            <div id="backup-live-sections"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Save All -->
+<div class="actions-bar" style="margin-bottom:1.5rem">
+    <button class="btn btn-primary" onclick="saveAllConfig()">Save All Connections</button>
+    <button class="btn btn-secondary" onclick="refreshRouterInfo()">Refresh Live Data</button>
+    <button class="btn btn-secondary" onclick="loadComparison()">Load Comparison</button>
+    <div id="save-result" class="test-result" style="display:inline-block; margin-left:1rem"></div>
+</div>
+
+<!-- Configuration Comparison (side-by-side) -->
+<div class="card" id="comparison-card" style="display:none">
+    <h3>Configuration Comparison — Master vs Backup</h3>
+    <p style="color:var(--text-dim); font-size:0.85rem; margin-bottom:1rem">
+        Side-by-side view of all configuration sections. Static items only (dynamic/auto-generated excluded).
+    </p>
+
+    <!-- Filter tabs -->
+    <div class="compare-tabs" id="compare-tabs"></div>
+
+    <!-- Comparison body -->
+    <div id="comparison-body">
+        <span class="text-warn">Loading comparison data...</span>
+    </div>
+</div>
+
+<!-- Sync Section Toggles -->
+<div class="card">
+    <h3>Selective Sync</h3>
+    <p>Enable or disable synchronization for each section group. Disabled groups will not be synced from master to slave.</p>
+    <div id="section-groups" class="section-groups-grid">Loading...</div>
+    <button class="btn btn-primary" onclick="saveSectionGroups()" style="margin-top:1rem">Save Sync Settings</button>
+</div>
+
+<!-- Variable Mapping -->
+<div class="card">
+    <h3>Variable Mapping</h3>
+    <p>Map device-specific values between master and slave (IP addresses, gateways, etc.)</p>
+    <table id="variables-table" class="data-table">
+        <thead><tr><th>Variable</th><th>Master Value</th><th>Slave Value</th></tr></thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<script>
+/* ---- Section metadata ---- */
+const SEC_LABELS = {
+    ip_addresses: 'IP Addresses', interfaces: 'Interfaces',
+    vrrp: 'VRRP', routes: 'Routes',
+    firewall_filter: 'FW Filter', firewall_nat: 'FW NAT',
+    firewall_mangle: 'FW Mangle', firewall_raw: 'FW Raw',
+    address_lists: 'Address Lists',
+    bridges: 'Bridges', bridge_ports: 'Bridge Ports',
+    vlans: 'VLANs', bonding: 'Bonding',
+    interface_lists: 'Interface Lists',
+    dhcp_servers: 'DHCP Servers', dhcp_networks: 'DHCP Networks',
+    dhcp_leases: 'DHCP Leases', ip_pools: 'IP Pools',
+    dns_static: 'DNS Static',
+    scripts: 'Scripts', schedulers: 'Schedulers',
+    users: 'Users', ip_services: 'IP Services',
+    wireguard: 'WireGuard', wireguard_peers: 'WG Peers',
+    ipsec_peers: 'IPsec Peers', ipsec_policies: 'IPsec Policies',
+    queue_simple: 'Queues Simple', queue_tree: 'Queues Tree',
+};
+
+/* Section → group mapping */
+const SEC_GROUPS = {
+    interfaces: 'interfaces', bridges: 'interfaces', bridge_ports: 'interfaces',
+    vlans: 'interfaces', bonding: 'interfaces', interface_lists: 'interfaces',
+    ip_addresses: 'ip_addressing',
+    firewall_filter: 'firewall', firewall_nat: 'firewall',
+    firewall_mangle: 'firewall', firewall_raw: 'firewall', address_lists: 'firewall',
+    routes: 'routing',
+    dhcp_servers: 'dhcp_dns', dhcp_networks: 'dhcp_dns',
+    dhcp_leases: 'dhcp_dns', ip_pools: 'dhcp_dns', dns_static: 'dhcp_dns',
+    wireguard: 'vpn', wireguard_peers: 'vpn',
+    ipsec_peers: 'vpn', ipsec_policies: 'vpn',
+    scripts: 'scripts', schedulers: 'scripts',
+    queue_simple: 'queues', queue_tree: 'queues',
+    vrrp: 'system', users: 'system', ip_services: 'system',
+};
+
+const GROUP_LABELS = {
+    interfaces: 'Interfaces', ip_addressing: 'IP Addressing',
+    firewall: 'Firewall', routing: 'Routing',
+    dhcp_dns: 'DHCP & DNS', vpn: 'VPN',
+    scripts: 'Scripts', queues: 'Queues', system: 'System',
+};
+
+/* ---- State: store comparison data ---- */
+let _masterData = null;
+let _backupData = null;
+let _activeFilter = 'all';
+
+/* ---- Load saved config into form fields ---- */
+async function loadSetupConfig() {
+    try {
+        const res = await fetch('/api/setup/config');
+        const cfg = await res.json();
+        document.getElementById('master-name').value = cfg.master.name || '';
+        document.getElementById('master-url').value = cfg.master.api_url || '';
+        document.getElementById('master-user').value = cfg.master.api_user || '';
+        document.getElementById('master-ssh-port').value = cfg.master.ssh_port || 22;
+        document.getElementById('master-ssh-enabled').checked = cfg.master.ssh_enabled !== false;
+        document.getElementById('backup-name').value = cfg.backup.name || '';
+        document.getElementById('backup-url').value = cfg.backup.api_url || '';
+        document.getElementById('backup-user').value = cfg.backup.api_user || '';
+        document.getElementById('backup-ssh-port').value = cfg.backup.ssh_port || 22;
+        document.getElementById('backup-ssh-enabled').checked = cfg.backup.ssh_enabled !== false;
+
+        // Show warning if password is not set
+        ['master', 'backup'].forEach(role => {
+            const hasPw = cfg[role].has_password;
+            const passField = document.getElementById(role + '-pass');
+            if (hasPw) {
+                passField.placeholder = '••••• (saved — leave empty to keep)';
+            } else {
+                passField.placeholder = '⚠ No password set — enter and Save';
+                passField.style.borderColor = 'var(--warn)';
+            }
+        });
+    } catch(e) { console.error('Load config failed:', e); }
+}
+
+/* ---- Test Connection ---- */
+async function testConnection(role) {
+    const url = document.getElementById(role + '-url').value;
+    const user = document.getElementById(role + '-user').value;
+    const pass = document.getElementById(role + '-pass').value;
+    const el = document.getElementById(role + '-test-result');
+    el.innerHTML = '<span class="text-warn">Testing...</span>';
+
+    try {
+        const res = await fetch('/api/setup/test-connection', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url, username: user, password: pass})
+        });
+        const data = await res.json();
+        if (data.reachable) {
+            el.innerHTML = `<span class="text-ok">Connected</span> | ` +
+                `${data.identity} | v${data.version} | ${data.board || ''} | ` +
+                `CPU: ${data.cpu_load}% | Uptime: ${data.uptime}`;
+        } else if (data.not_mikrotik) {
+            el.innerHTML = `<span class="text-err">Not a MikroTik</span> — ` +
+                `The device at this IP is not a MikroTik router or the REST API (/rest) is not enabled. ` +
+                `Check the IP address and ensure the REST API service (www-ssl) is enabled.`;
+        } else {
+            el.innerHTML = `<span class="text-err">Failed</span>: ${data.error}`;
+        }
+    } catch(e) {
+        el.innerHTML = `<span class="text-err">Error</span>: ${e.message}`;
+    }
+}
+
+/* ---- Save Config ---- */
+function getRouterFormData(role) {
+    return {
+        name: document.getElementById(role + '-name').value,
+        api_url: document.getElementById(role + '-url').value,
+        api_user: document.getElementById(role + '-user').value,
+        api_password: document.getElementById(role + '-pass').value,
+        ssh_port: parseInt(document.getElementById(role + '-ssh-port').value) || 22,
+        ssh_enabled: document.getElementById(role + '-ssh-enabled').checked,
+    };
+}
+
+async function saveRouterConfig(role) {
+    const data = {};
+    data[role] = getRouterFormData(role);
+    const el = document.getElementById('save-result');
+    el.innerHTML = '<span class="text-warn">Saving...</span>';
+
+    try {
+        const res = await fetch('/api/setup/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await res.json();
+        if (result.status === 'ok') {
+            el.innerHTML = `<span class="text-ok">${role.charAt(0).toUpperCase() + role.slice(1)} saved</span>`;
+            loadRouterInfo(role);
+        } else {
+            el.innerHTML = `<span class="text-err">Error: ${result.detail || 'Unknown'}</span>`;
+        }
+    } catch(e) {
+        el.innerHTML = `<span class="text-err">Error: ${e.message}</span>`;
+    }
+}
+
+async function saveAllConfig() {
+    const data = {
+        master: getRouterFormData('master'),
+        backup: getRouterFormData('backup'),
+    };
+    const el = document.getElementById('save-result');
+    el.innerHTML = '<span class="text-warn">Saving...</span>';
+
+    try {
+        const res = await fetch('/api/setup/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await res.json();
+        if (result.status === 'ok') {
+            el.innerHTML = '<span class="text-ok">All saved &amp; reconnected</span>';
+            refreshRouterInfo();
+        } else {
+            el.innerHTML = `<span class="text-err">Error: ${result.detail || 'Unknown'}</span>`;
+        }
+    } catch(e) {
+        el.innerHTML = `<span class="text-err">Error: ${e.message}</span>`;
+    }
+}
+
+/* ---- Live Router Info ---- */
+function formatBytes(bytes) {
+    if (!bytes) return '?';
+    const n = parseInt(bytes);
+    if (isNaN(n)) return bytes;
+    if (n > 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+    if (n > 1048576) return (n / 1048576).toFixed(0) + ' MB';
+    return (n / 1024).toFixed(0) + ' KB';
+}
+
+async function loadRouterInfo(role) {
+    const panel = document.getElementById(role + '-live-info');
+    const header = document.getElementById(role + '-live-header');
+    const sections = document.getElementById(role + '-live-sections');
+
+    panel.style.display = '';
+    header.innerHTML = '<span class="text-warn">Connecting...</span>';
+    sections.innerHTML = '';
+
+    try {
+        const res = await fetch(`/api/setup/router-info/${role}`);
+        const d = await res.json();
+
+        // Store data for comparison
+        if (role === 'master') _masterData = d;
+        else _backupData = d;
+
+        if (d.not_mikrotik) {
+            header.innerHTML = `<div class="check-item check-err">` +
+                `<span class="check-icon">✗</span> <strong>Not a MikroTik device</strong><br>` +
+                `The device at <code>${d.api_url}</code> responded but is not running RouterOS REST API.<br>` +
+                `Please check the IP address. If this is a MikroTik, enable the REST API service (www-ssl).` +
+                `</div>`;
+            return;
+        }
+
+        if (!d.rest_reachable && !d.ssh_reachable) {
+            header.innerHTML = `<div class="check-item check-err">` +
+                `<span class="check-icon">✗</span> Unreachable` +
+                `${d.rest_error ? ' — ' + d.rest_error : ''}` +
+                `</div>`;
+            return;
+        }
+
+        // System info header
+        let connBadges = '';
+        if (d.rest_reachable) connBadges += '<span class="badge badge-ok">REST</span> ';
+        else connBadges += '<span class="badge badge-err">REST</span> ';
+        if (d.ssh_reachable) connBadges += '<span class="badge badge-ok">SSH</span>';
+        else if (d.ssh && d.ssh.error) connBadges += '<span class="badge badge-err" title="' + d.ssh.error + '">SSH</span>';
+
+        const memPct = d.total_memory && d.free_memory
+            ? ((1 - parseInt(d.free_memory) / parseInt(d.total_memory)) * 100).toFixed(0) + '%'
+            : '?';
+
+        header.innerHTML =
+            `<div class="router-live-header">` +
+            `<div>${connBadges}</div>` +
+            `<div class="router-live-identity"><strong>${d.identity || '?'}</strong> — v${d.version || '?'}</div>` +
+            `<div class="router-live-hw">${d.board || ''} | ${d.architecture || ''} | ${d.cpu || ''} ×${d.cpu_count || '?'}</div>` +
+            `<div class="router-live-stats">` +
+            `CPU: <strong>${d.cpu_load || '?'}%</strong> | ` +
+            `RAM: <strong>${memPct}</strong> (${formatBytes(d.free_memory)} free / ${formatBytes(d.total_memory)}) | ` +
+            `HDD: ${formatBytes(d.free_hdd)} free / ${formatBytes(d.total_hdd)} | ` +
+            `Uptime: <strong>${d.uptime || '?'}</strong>` +
+            `</div></div>`;
+
+        // Sections summary (compact grid)
+        if (d.sections) {
+            let html = '<div class="live-sections-grid">';
+            for (const [key, label] of Object.entries(SEC_LABELS)) {
+                const sec = d.sections[key];
+                if (!sec) continue;
+                const err = sec.error ? ' <span class="text-warn">!</span>' : '';
+
+                // Inline detail for key sections
+                let detail = '';
+                if (key === 'ip_addresses' && sec.items && sec.items.length > 0) {
+                    detail = '<div class="live-detail">' +
+                        sec.items.slice(0, 6).map(i => `<code>${i.address || ''}  ${i.interface || ''}</code>`).join('<br>');
+                    if (sec.items.length > 6) detail += `<br><code>... +${sec.items.length - 6} more</code>`;
+                    detail += '</div>';
+                } else if (key === 'vrrp' && sec.items && sec.items.length > 0) {
+                    detail = '<div class="live-detail">' +
+                        sec.items.map(i => `<code>${i.name || ''} VRID=${i.vrid||''} pri=${i.priority||''} on ${i.interface||''}</code>`).join('<br>') +
+                        '</div>';
+                } else if (key === 'interfaces' && sec.items && sec.items.length > 0) {
+                    const byType = {};
+                    sec.items.forEach(i => { const t = i.type || 'other'; byType[t] = (byType[t]||0)+1; });
+                    detail = '<div class="live-detail"><code>' +
+                        Object.entries(byType).map(([t,c]) => `${t}: ${c}`).join(', ') +
+                        '</code></div>';
+                } else if (key === 'address_lists' && sec.items && sec.items.length > 0) {
+                    // Group by list name
+                    const byList = {};
+                    sec.items.forEach(i => {
+                        const name = i.list || 'unnamed';
+                        if (!byList[name]) byList[name] = [];
+                        byList[name].push(i.address || i.comment || '');
+                    });
+                    detail = '<div class="live-detail">';
+                    const listNames = Object.keys(byList).sort();
+                    const showMax = 5;
+                    listNames.slice(0, showMax).forEach(name => {
+                        detail += `<code><strong>${name}</strong>: ${byList[name].length} entries</code><br>`;
+                    });
+                    if (listNames.length > showMax) detail += `<code>... +${listNames.length - showMax} more lists</code>`;
+                    detail += '</div>';
+                } else if (key === 'routes' && sec.items && sec.items.length > 0) {
+                    detail = '<div class="live-detail">' +
+                        sec.items.slice(0, 4).map(i =>
+                            `<code>${i['dst-address']||''} → ${i.gateway||'connected'}</code>`
+                        ).join('<br>');
+                    if (sec.items.length > 4) detail += `<br><code>... +${sec.items.length - 4} more</code>`;
+                    detail += '</div>';
+                } else if (key === 'dhcp_leases' && sec.items && sec.items.length > 0) {
+                    detail = `<div class="live-detail"><code>${sec.count} static leases</code></div>`;
+                }
+
+                html += `<div class="live-section-item">` +
+                    `<div class="live-section-label">${label}${err}</div>` +
+                    `<div class="live-section-count">${sec.count}</div>` +
+                    `${detail}</div>`;
+            }
+            html += '</div>';
+            sections.innerHTML = html;
+        }
+
+    } catch(e) {
+        header.innerHTML = `<span class="text-err">Error: ${e.message}</span>`;
+    }
+}
+
+function refreshRouterInfo() {
+    loadRouterInfo('master');
+    loadRouterInfo('backup');
+}
+
+/* ---- Configuration Comparison ---- */
+async function loadComparison() {
+    const card = document.getElementById('comparison-card');
+    const body = document.getElementById('comparison-body');
+    card.style.display = '';
+    body.innerHTML = '<span class="text-warn">Loading data from both routers...</span>';
+
+    // Fetch both routers' data in parallel
+    try {
+        const [mRes, bRes] = await Promise.all([
+            fetch('/api/setup/router-info/master'),
+            fetch('/api/setup/router-info/backup'),
+        ]);
+        _masterData = await mRes.json();
+        _backupData = await bRes.json();
+    } catch(e) {
+        body.innerHTML = `<span class="text-err">Error fetching data: ${e.message}</span>`;
+        return;
+    }
+
+    renderComparison();
+}
+
+function renderComparison() {
+    const body = document.getElementById('comparison-body');
+    const tabsEl = document.getElementById('compare-tabs');
+
+    if (!_masterData || !_backupData) {
+        body.innerHTML = '<span class="text-dim">No data loaded. Click "Load Comparison" to fetch data from both routers.</span>';
+        return;
+    }
+
+    const mSec = _masterData.sections || {};
+    const bSec = _backupData.sections || {};
+
+    // Build group counts for tabs
+    const groupCounts = {};
+    for (const key of Object.keys(SEC_LABELS)) {
+        const g = SEC_GROUPS[key] || 'other';
+        if (!groupCounts[g]) groupCounts[g] = { total: 0, diff: 0 };
+        const mCnt = mSec[key] ? mSec[key].count : 0;
+        const bCnt = bSec[key] ? bSec[key].count : 0;
+        groupCounts[g].total += Math.max(mCnt, bCnt);
+        if (mCnt !== bCnt) groupCounts[g].diff += Math.abs(mCnt - bCnt);
+    }
+
+    // Render filter tabs
+    let tabsHtml = `<div class="compare-tab ${_activeFilter === 'all' ? 'active' : ''}" onclick="setCompareFilter('all')">All</div>`;
+    for (const [gName, gLabel] of Object.entries(GROUP_LABELS)) {
+        const gc = groupCounts[gName] || { total: 0 };
+        if (gc.total === 0) continue;
+        const diffBadge = gc.diff > 0 ? `<span class="tab-count text-warn">(${gc.diff}Δ)</span>` : '';
+        tabsHtml += `<div class="compare-tab ${_activeFilter === gName ? 'active' : ''}" ` +
+            `onclick="setCompareFilter('${gName}')">${gLabel} ${diffBadge}</div>`;
+    }
+    tabsEl.innerHTML = tabsHtml;
+
+    // Render sections
+    let html = '';
+
+    // System info header comparison
+    if (_activeFilter === 'all' || _activeFilter === 'system') {
+        html += renderSystemComparison();
+    }
+
+    // Section-by-section comparison
+    for (const [key, label] of Object.entries(SEC_LABELS)) {
+        const group = SEC_GROUPS[key] || 'other';
+        if (_activeFilter !== 'all' && _activeFilter !== group) continue;
+
+        const mItems = mSec[key] ? mSec[key].items || [] : [];
+        const bItems = bSec[key] ? bSec[key].items || [] : [];
+        const mCnt = mSec[key] ? mSec[key].count : 0;
+        const bCnt = bSec[key] ? bSec[key].count : 0;
+
+        if (mCnt === 0 && bCnt === 0) continue;
+
+        html += renderSectionComparison(key, label, mItems, bItems, mCnt, bCnt);
+    }
+
+    if (!html) {
+        html = '<p style="color:var(--text-dim); padding:1rem">No sections with data found for this filter.</p>';
+    }
+
+    body.innerHTML = html;
+}
+
+function setCompareFilter(filter) {
+    _activeFilter = filter;
+    renderComparison();
+}
+
+function renderSystemComparison() {
+    const m = _masterData;
+    const b = _backupData;
+    const mOk = m.rest_reachable;
+    const bOk = b.rest_reachable;
+
+    let html = '<div class="compare-section">';
+    html += `<div class="compare-section-header" onclick="toggleSection(this)">`;
+    html += `<h4>System Info</h4>`;
+    html += `<div class="compare-section-counts">`;
+    html += `<span class="master-cnt">${mOk ? '✓ Master' : '✗ Master'}</span>`;
+    html += `<span class="slave-cnt">${bOk ? '✓ Backup' : '✗ Backup'}</span>`;
+    html += `</div>`;
+    html += `<span class="compare-toggle">▼</span></div>`;
+    html += `<div class="compare-section-body">`;
+
+    // Header row
+    html += `<div class="compare-pair-grid">`;
+    html += `<div class="compare-col compare-col-header master-hdr">MASTER — ${m.identity || '?'}</div>`;
+    html += `<div class="compare-col compare-col-header">BACKUP — ${b.identity || '?'}</div>`;
+    html += `</div>`;
+
+    const fields = [
+        ['Board', 'board'], ['Version', 'version'], ['Architecture', 'architecture'],
+        ['CPU', 'cpu'], ['CPU Count', 'cpu_count'], ['CPU Load', 'cpu_load'],
+        ['Uptime', 'uptime'],
+    ];
+
+    for (const [label, field] of fields) {
+        const mVal = m[field] || '—';
+        const bVal = b[field] || '—';
+        const cls = mVal === bVal ? 'compare-match' : 'compare-diff';
+        html += `<div class="compare-pair-grid ${cls}">`;
+        html += `<div class="compare-col"><span class="compare-item-key">${label}:</span> <code>${mVal}</code></div>`;
+        html += `<div class="compare-col"><span class="compare-item-key">${label}:</span> <code>${bVal}</code></div>`;
+        html += `</div>`;
+    }
+
+    // Memory
+    html += `<div class="compare-pair-grid">`;
+    html += `<div class="compare-col"><span class="compare-item-key">RAM:</span> <code>${formatBytes(m.free_memory)} free / ${formatBytes(m.total_memory)}</code></div>`;
+    html += `<div class="compare-col"><span class="compare-item-key">RAM:</span> <code>${formatBytes(b.free_memory)} free / ${formatBytes(b.total_memory)}</code></div>`;
+    html += `</div>`;
+
+    html += `</div></div>`;
+    return html;
+}
+
+function renderSectionComparison(key, label, mItems, bItems, mCnt, bCnt) {
+    const diff = mCnt !== bCnt;
+    const diffLabel = diff ? `<span class="text-warn"> (Δ ${Math.abs(mCnt - bCnt)})</span>` : '';
+
+    let html = '<div class="compare-section">';
+    html += `<div class="compare-section-header" onclick="toggleSection(this)">`;
+    html += `<h4>${label}${diffLabel}</h4>`;
+    html += `<div class="compare-section-counts">`;
+    html += `<span class="master-cnt">Master: ${mCnt}</span>`;
+    html += `<span class="slave-cnt">Backup: ${bCnt}</span>`;
+    html += `</div>`;
+    html += `<span class="compare-toggle">▼</span></div>`;
+    html += `<div class="compare-section-body" style="display:none">`;
+
+    // Header row
+    html += `<div class="compare-pair-grid">`;
+    html += `<div class="compare-col compare-col-header master-hdr">MASTER (${mCnt})</div>`;
+    html += `<div class="compare-col compare-col-header">BACKUP (${bCnt})</div>`;
+    html += `</div>`;
+
+    // Render based on section type
+    if (key === 'address_lists') {
+        html += renderAddressListComparison(mItems, bItems);
+    } else if (key === 'ip_addresses') {
+        html += renderIPAddressComparison(mItems, bItems);
+    } else if (key === 'interfaces') {
+        html += renderInterfaceComparison(mItems, bItems);
+    } else if (key === 'firewall_filter' || key === 'firewall_nat' || key === 'firewall_mangle' || key === 'firewall_raw') {
+        html += renderFirewallComparison(mItems, bItems);
+    } else if (key === 'routes') {
+        html += renderRouteComparison(mItems, bItems);
+    } else if (key === 'dhcp_leases') {
+        html += renderDHCPLeaseComparison(mItems, bItems);
+    } else if (key === 'dhcp_servers') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['interface', 'address-pool', 'disabled']);
+    } else if (key === 'dhcp_networks') {
+        html += renderNamedItemComparison(mItems, bItems, 'address', ['gateway', 'dns-server', 'domain']);
+    } else if (key === 'ip_pools') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['ranges']);
+    } else if (key === 'vlans') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['vlan-id', 'interface']);
+    } else if (key === 'bridges') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['protocol-mode', 'vlan-filtering']);
+    } else if (key === 'bridge_ports') {
+        html += renderNamedItemComparison(mItems, bItems, 'interface', ['bridge', 'pvid', 'hw']);
+    } else if (key === 'bonding') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['slaves', 'mode']);
+    } else if (key === 'scripts') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['run-count', 'last-started']);
+    } else if (key === 'schedulers') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['interval', 'on-event', 'disabled']);
+    } else if (key === 'users') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['group', 'disabled']);
+    } else if (key === 'ip_services') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['port', 'disabled']);
+    } else if (key === 'dns_static') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['address', 'type']);
+    } else if (key === 'vrrp') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['vrid', 'priority', 'interface', 'disabled']);
+    } else if (key === 'interface_lists') {
+        html += renderNamedItemComparison(mItems, bItems, 'name', ['comment']);
+    } else {
+        html += renderGenericComparison(mItems, bItems);
+    }
+
+    html += `</div></div>`;
+    return html;
+}
+
+/* ---- Section-specific renderers ---- */
+
+function renderAddressListComparison(mItems, bItems) {
+    // Group by list name
+    const mByList = {}, bByList = {};
+    mItems.forEach(i => { const n = i.list || 'unnamed'; if (!mByList[n]) mByList[n] = []; mByList[n].push(i); });
+    bItems.forEach(i => { const n = i.list || 'unnamed'; if (!bByList[n]) bByList[n] = []; bByList[n].push(i); });
+
+    const allLists = [...new Set([...Object.keys(mByList), ...Object.keys(bByList)])].sort();
+    let html = '';
+
+    for (const listName of allLists) {
+        const mEntries = mByList[listName] || [];
+        const bEntries = bByList[listName] || [];
+        const mOnly = mEntries.length > 0 && bEntries.length === 0;
+        const bOnly = bEntries.length > 0 && mEntries.length === 0;
+        const cls = mOnly ? 'compare-only-master' : bOnly ? 'compare-only-slave' :
+                    mEntries.length !== bEntries.length ? 'compare-diff' : 'compare-match';
+
+        html += `<div class="compare-pair-grid ${cls}">`;
+        html += `<div class="compare-col">`;
+        html += `<div class="addr-list-name">${listName} (${mEntries.length})</div>`;
+        html += `<div class="addr-list-entries">`;
+        mEntries.forEach(e => {
+            const cmt = e.comment ? ` <span class="compare-item-key">${e.comment}</span>` : '';
+            html += `<code>${e.address || ''}${cmt}</code><br>`;
+        });
+        if (mEntries.length === 0) html += '<em class="compare-empty">—</em>';
+        html += `</div></div>`;
+
+        html += `<div class="compare-col">`;
+        html += `<div class="addr-list-name">${listName} (${bEntries.length})</div>`;
+        html += `<div class="addr-list-entries">`;
+        bEntries.forEach(e => {
+            const cmt = e.comment ? ` <span class="compare-item-key">${e.comment}</span>` : '';
+            html += `<code>${e.address || ''}${cmt}</code><br>`;
+        });
+        if (bEntries.length === 0) html += '<em class="compare-empty">—</em>';
+        html += `</div></div></div>`;
+    }
+
+    return html || '<div class="compare-empty">No address list entries</div>';
+}
+
+function renderIPAddressComparison(mItems, bItems) {
+    const maxLen = Math.max(mItems.length, bItems.length);
+    let html = '';
+    for (let i = 0; i < maxLen; i++) {
+        const m = mItems[i];
+        const b = bItems[i];
+        const cls = m && b && m.address === b.address && m.interface === b.interface ? 'compare-match' : 'compare-diff';
+        html += `<div class="compare-pair-grid ${cls}">`;
+        html += `<div class="compare-col">${m ? `<code>${m.address || ''}</code> on <code>${m.interface || ''}</code>` +
+            (m.comment ? ` <span class="compare-item-key">${m.comment}</span>` : '') +
+            (m.disabled === 'true' ? ' <span class="text-err">[disabled]</span>' : '') : '<em class="compare-empty">—</em>'}</div>`;
+        html += `<div class="compare-col">${b ? `<code>${b.address || ''}</code> on <code>${b.interface || ''}</code>` +
+            (b.comment ? ` <span class="compare-item-key">${b.comment}</span>` : '') +
+            (b.disabled === 'true' ? ' <span class="text-err">[disabled]</span>' : '') : '<em class="compare-empty">—</em>'}</div>`;
+        html += `</div>`;
+    }
+    return html;
+}
+
+function renderInterfaceComparison(mItems, bItems) {
+    // Group by type for both sides
+    const mByType = {}, bByType = {};
+    mItems.forEach(i => { const t = i.type || 'other'; if (!mByType[t]) mByType[t] = []; mByType[t].push(i); });
+    bItems.forEach(i => { const t = i.type || 'other'; if (!bByType[t]) bByType[t] = []; bByType[t].push(i); });
+
+    const allTypes = [...new Set([...Object.keys(mByType), ...Object.keys(bByType)])].sort();
+    let html = '';
+
+    for (const type of allTypes) {
+        const mList = mByType[type] || [];
+        const bList = bByType[type] || [];
+        const cls = mList.length !== bList.length ? 'compare-diff' : 'compare-match';
+
+        html += `<div class="compare-pair-grid ${cls}">`;
+        html += `<div class="compare-col"><strong>${type}</strong> (${mList.length})<br>`;
+        mList.forEach(i => { html += `<code>${i.name || ''}</code> `; });
+        html += `</div>`;
+        html += `<div class="compare-col"><strong>${type}</strong> (${bList.length})<br>`;
+        bList.forEach(i => { html += `<code>${i.name || ''}</code> `; });
+        html += `</div></div>`;
+    }
+    return html;
+}
+
+function renderFirewallComparison(mItems, bItems) {
+    // Show rules side by side by position
+    const maxLen = Math.max(mItems.length, bItems.length);
+    if (maxLen > 50) {
+        // Too many rules for full display — show summary
+        const mChains = {}, bChains = {};
+        mItems.forEach(i => { const c = i.chain || '?'; mChains[c] = (mChains[c]||0)+1; });
+        bItems.forEach(i => { const c = i.chain || '?'; bChains[c] = (bChains[c]||0)+1; });
+        const allChains = [...new Set([...Object.keys(mChains), ...Object.keys(bChains)])].sort();
+
+        let html = '';
+        for (const chain of allChains) {
+            const mc = mChains[chain] || 0;
+            const bc = bChains[chain] || 0;
+            const cls = mc === bc ? 'compare-match' : 'compare-diff';
+            html += `<div class="compare-pair-grid ${cls}">`;
+            html += `<div class="compare-col"><strong>chain=${chain}</strong>: ${mc} rules</div>`;
+            html += `<div class="compare-col"><strong>chain=${chain}</strong>: ${bc} rules</div>`;
+            html += `</div>`;
+        }
+        return html;
+    }
+
+    let html = '';
+    for (let i = 0; i < maxLen; i++) {
+        const m = mItems[i];
+        const b = bItems[i];
+        html += `<div class="compare-pair-grid compare-diff">`;
+        html += `<div class="compare-col">${m ? fwRuleStr(m) : '<em class="compare-empty">—</em>'}</div>`;
+        html += `<div class="compare-col">${b ? fwRuleStr(b) : '<em class="compare-empty">—</em>'}</div>`;
+        html += `</div>`;
+    }
+    return html;
+}
+
+function fwRuleStr(r) {
+    let s = `<code>${r.chain||''} ${r.action||''}</code>`;
+    if (r['src-address']) s += ` src=<code>${r['src-address']}</code>`;
+    if (r['dst-address']) s += ` dst=<code>${r['dst-address']}</code>`;
+    if (r['dst-port']) s += ` dport=<code>${r['dst-port']}</code>`;
+    if (r.protocol) s += ` proto=<code>${r.protocol}</code>`;
+    if (r['in-interface'] || r['in-interface-list']) s += ` in=<code>${r['in-interface']||r['in-interface-list']||''}</code>`;
+    if (r['out-interface'] || r['out-interface-list']) s += ` out=<code>${r['out-interface']||r['out-interface-list']||''}</code>`;
+    if (r.comment) s += ` <span class="compare-item-key">// ${r.comment}</span>`;
+    if (r.disabled === 'true') s += ' <span class="text-err">[dis]</span>';
+    return s;
+}
+
+function renderRouteComparison(mItems, bItems) {
+    const maxLen = Math.max(mItems.length, bItems.length);
+    let html = '';
+    for (let i = 0; i < maxLen; i++) {
+        const m = mItems[i];
+        const b = bItems[i];
+        html += `<div class="compare-pair-grid compare-diff">`;
+        html += `<div class="compare-col">${m ? `<code>${m['dst-address']||''}</code> → <code>${m.gateway||'connected'}</code>` +
+            (m.distance ? ` d=${m.distance}` : '') +
+            (m.comment ? ` <span class="compare-item-key">${m.comment}</span>` : '') +
+            (m.disabled === 'true' ? ' <span class="text-err">[dis]</span>' : '') : '<em class="compare-empty">—</em>'}</div>`;
+        html += `<div class="compare-col">${b ? `<code>${b['dst-address']||''}</code> → <code>${b.gateway||'connected'}</code>` +
+            (b.distance ? ` d=${b.distance}` : '') +
+            (b.comment ? ` <span class="compare-item-key">${b.comment}</span>` : '') +
+            (b.disabled === 'true' ? ' <span class="text-err">[dis]</span>' : '') : '<em class="compare-empty">—</em>'}</div>`;
+        html += `</div>`;
+    }
+    return html;
+}
+
+function renderDHCPLeaseComparison(mItems, bItems) {
+    // Large lists — show summary by server
+    if (mItems.length > 30 || bItems.length > 30) {
+        const mServers = {}, bServers = {};
+        mItems.forEach(i => { const s = i.server || '?'; mServers[s] = (mServers[s]||0)+1; });
+        bItems.forEach(i => { const s = i.server || '?'; bServers[s] = (bServers[s]||0)+1; });
+        const allServers = [...new Set([...Object.keys(mServers), ...Object.keys(bServers)])].sort();
+
+        let html = '';
+        for (const srv of allServers) {
+            const mc = mServers[srv] || 0;
+            const bc = bServers[srv] || 0;
+            const cls = mc === bc ? 'compare-match' : 'compare-diff';
+            html += `<div class="compare-pair-grid ${cls}">`;
+            html += `<div class="compare-col"><strong>server=${srv}</strong>: ${mc} leases</div>`;
+            html += `<div class="compare-col"><strong>server=${srv}</strong>: ${bc} leases</div>`;
+            html += `</div>`;
+        }
+        return html;
+    }
+
+    return renderNamedItemComparison(mItems, bItems, 'mac-address', ['address', 'server', 'comment']);
+}
+
+function renderNamedItemComparison(mItems, bItems, nameField, extraFields) {
+    // Build lookup by name
+    const mMap = {}, bMap = {};
+    mItems.forEach(i => { const n = i[nameField] || i['.id'] || '?'; mMap[n] = i; });
+    bItems.forEach(i => { const n = i[nameField] || i['.id'] || '?'; bMap[n] = i; });
+
+    const allNames = [...new Set([...Object.keys(mMap), ...Object.keys(bMap)])];
+    let html = '';
+
+    for (const name of allNames) {
+        const m = mMap[name];
+        const b = bMap[name];
+        const mOnly = m && !b;
+        const bOnly = !m && b;
+        const cls = mOnly ? 'compare-only-master' : bOnly ? 'compare-only-slave' : 'compare-match';
+
+        html += `<div class="compare-pair-grid ${cls}">`;
+        html += `<div class="compare-col">${m ? formatNamedItem(m, nameField, extraFields) : '<em class="compare-empty">—</em>'}</div>`;
+        html += `<div class="compare-col">${b ? formatNamedItem(b, nameField, extraFields) : '<em class="compare-empty">—</em>'}</div>`;
+        html += `</div>`;
+    }
+
+    return html || '<div class="compare-empty">No items</div>';
+}
+
+function formatNamedItem(item, nameField, extraFields) {
+    let s = `<code><strong>${item[nameField] || '?'}</strong></code>`;
+    for (const f of extraFields) {
+        if (item[f] !== undefined && item[f] !== '') {
+            s += ` <span class="compare-item-key">${f}=</span><code>${item[f]}</code>`;
+        }
+    }
+    if (item.disabled === 'true') s += ' <span class="text-err">[disabled]</span>';
+    if (item.comment) s += ` <span class="compare-item-key">// ${item.comment}</span>`;
+    return s;
+}
+
+function renderGenericComparison(mItems, bItems) {
+    const maxLen = Math.max(mItems.length, bItems.length);
+    if (maxLen === 0) return '<div class="compare-empty">No items</div>';
+
+    let html = '';
+    for (let i = 0; i < Math.min(maxLen, 30); i++) {
+        const m = mItems[i];
+        const b = bItems[i];
+        html += `<div class="compare-pair-grid compare-diff">`;
+        html += `<div class="compare-col">${m ? `<code>${JSON.stringify(m).substring(0, 120)}</code>` : '<em class="compare-empty">—</em>'}</div>`;
+        html += `<div class="compare-col">${b ? `<code>${JSON.stringify(b).substring(0, 120)}</code>` : '<em class="compare-empty">—</em>'}</div>`;
+        html += `</div>`;
+    }
+    if (maxLen > 30) {
+        html += `<div class="compare-pair-grid"><div class="compare-col" style="grid-column: span 2; text-align:center">` +
+            `<em class="compare-empty">... ${maxLen - 30} more items</em></div></div>`;
+    }
+    return html;
+}
+
+function toggleSection(headerEl) {
+    const body = headerEl.nextElementSibling;
+    const toggle = headerEl.querySelector('.compare-toggle');
+    if (body.style.display === 'none') {
+        body.style.display = '';
+        toggle.classList.remove('collapsed');
+    } else {
+        body.style.display = 'none';
+        toggle.classList.add('collapsed');
+    }
+}
+
+/* ---- Section Groups ---- */
+async function loadSectionGroups() {
+    try {
+        const res = await fetch('/api/setup/section-groups');
+        const groups = await res.json();
+        const el = document.getElementById('section-groups');
+
+        el.innerHTML = groups.map(g =>
+            `<div class="section-group-card ${g.enabled ? '' : 'disabled'}">
+                <label class="toggle-label">
+                    <input type="checkbox" data-group="${g.name}" ${g.enabled ? 'checked' : ''}>
+                    <strong>${g.label}</strong>
+                </label>
+                <div class="section-meta" id="meta-${g.name}">
+                    ${g.section_count} sections
+                </div>
+            </div>`
+        ).join('');
+
+        try {
+            const cRes = await fetch('/api/setup/section-counts');
+            const cData = await cRes.json();
+            cData.forEach(c => {
+                const meta = document.getElementById('meta-' + c.name);
+                if (meta) {
+                    const grp = groups.find(g => g.name === c.name);
+                    meta.textContent = `${grp ? grp.section_count : '?'} sections | ` +
+                        `Master: ${c.master_count} items | Slave: ${c.slave_count} items`;
+                }
+            });
+        } catch(e) {}
+    } catch(e) {
+        document.getElementById('section-groups').textContent = 'Error: ' + e.message;
+    }
+}
+
+async function saveSectionGroups() {
+    const checkboxes = document.querySelectorAll('#section-groups input[type=checkbox]');
+    const groups = [];
+    checkboxes.forEach(cb => { if (cb.checked) groups.push(cb.dataset.group); });
+
+    const res = await fetch('/api/setup/section-groups', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({groups})
+    });
+    const data = await res.json();
+    alert(`Sync settings saved. ${data.sections.length} sections enabled.`);
+}
+
+/* ---- Variables ---- */
+async function loadVariables() {
+    try {
+        const res = await fetch('/api/variables');
+        const vars = await res.json();
+        const tbody = document.querySelector('#variables-table tbody');
+        tbody.innerHTML = vars.map(v =>
+            `<tr class="${v.changed === 'True' ? 'var-changed' : ''}">` +
+            `<td>${v.variable}</td><td><code>${v.master_value}</code></td>` +
+            `<td><code>${v.slave_value}</code></td></tr>`
+        ).join('');
+    } catch(e) {}
+}
+
+/* ---- Init ---- */
+loadSetupConfig();
+loadSectionGroups();
+loadVariables();
+// Auto-load live data from connected routers
+refreshRouterInfo();
+</script>
+{% endblock %}

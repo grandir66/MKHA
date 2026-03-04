@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}MKHA{% endblock %} - MikroTik HA Manager</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-header">
+            <h2>MKHA</h2>
+            <span class="cluster-name">{{ cluster_name }}</span>
+        </div>
+        <ul class="nav-links">
+            <li><a href="/" class="{% if active == 'dashboard' %}active{% endif %}">Dashboard</a></li>
+            <li><a href="/diff" class="{% if active == 'diff' %}active{% endif %}">Config Diff</a></li>
+            <li><a href="/config" class="{% if active == 'config' %}active{% endif %}">Router Config</a></li>
+            <li><a href="/provision" class="{% if active == 'provision' %}active{% endif %}">Provisioning</a></li>
+            <li><a href="/setup" class="{% if active == 'setup' %}active{% endif %}">Setup</a></li>
+            <li><a href="/logs" class="{% if active == 'logs' %}active{% endif %}">Logs</a></li>
+        </ul>
+    </nav>
+    <main class="content">
+        {% block content %}{% endblock %}
+    </main>
+    <script src="/static/app.js"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

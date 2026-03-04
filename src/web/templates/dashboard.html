@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Cluster Dashboard</h1>
+
+<div class="status-grid">
+    <div class="card" id="cluster-card">
+        <h3>Cluster Status</h3>
+        <div class="status-indicator" id="cluster-state">Loading...</div>
+        <div class="detail" id="cluster-uptime"></div>
+    </div>
+
+    <div class="card" id="master-card">
+        <h3>Master Router</h3>
+        <div class="status-indicator" id="master-status">Loading...</div>
+        <div class="detail" id="master-identity"></div>
+        <div class="detail" id="master-cpu"></div>
+        <div class="detail" id="master-mem"></div>
+        <div class="detail" id="master-uptime"></div>
+        <div class="detail" id="master-version"></div>
+    </div>
+
+    <div class="card" id="backup-card">
+        <h3>Backup Router</h3>
+        <div class="status-indicator" id="backup-status">Loading...</div>
+        <div class="detail" id="backup-identity"></div>
+        <div class="detail" id="backup-cpu"></div>
+        <div class="detail" id="backup-mem"></div>
+        <div class="detail" id="backup-uptime"></div>
+        <div class="detail" id="backup-version"></div>
+    </div>
+</div>
+
+<div class="actions-bar">
+    <button class="btn btn-primary" onclick="triggerSync(false)">Sync Now</button>
+    <button class="btn btn-secondary" onclick="triggerSync(true)">Dry Run</button>
+    <button class="btn btn-danger" onclick="triggerFailover()">Manual Failover</button>
+</div>
+
+<div class="card" id="last-sync-card">
+    <h3>Last Sync</h3>
+    <div id="last-sync-info">No sync performed yet</div>
+</div>
+
+<div class="card">
+    <h3>VRRP Status</h3>
+    <div class="vrrp-grid">
+        <div>
+            <h4>Master</h4>
+            <table id="vrrp-master-table">
+                <thead><tr><th>Name</th><th>VRID</th><th>Priority</th><th>State</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+        <div>
+            <h4>Backup</h4>
+            <table id="vrrp-backup-table">
+                <thead><tr><th>Name</th><th>VRID</th><th>Priority</th><th>State</th></tr></thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>Recent Events</h3>
+    <div id="events-list" class="events-list"></div>
+</div>
+
+<script>
+async function fetchStatus() {
+    try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        updateDashboard(data);
+    } catch(e) { console.error('Status fetch failed:', e); }
+}
+
+function updateDashboard(data) {
+    const cs = data.cluster;
+    document.getElementById('cluster-state').textContent = cs.state;
+    document.getElementById('cluster-state').className = 'status-indicator status-' + cs.state;
+    document.getElementById('cluster-uptime').textContent = 'Uptime: ' + formatSeconds(cs.uptime);
+
+    const q = data.quorum;
+    if (q.master_health) updateRouterCard('master', q.master_health);
+    if (q.backup_health) updateRouterCard('backup', q.backup_health);
+
+    if (data.last_sync) {
+        const ls = data.last_sync;
+        document.getElementById('last-sync-info').innerHTML =
+            `<span class="${ls.success ? 'text-ok' : 'text-err'}">${ls.success ? 'OK' : 'FAILED'}</span> ` +
+            `at ${ls.timestamp} | ${ls.total_changes} changes | ${ls.duration_ms.toFixed(0)}ms` +
+            (ls.errors.length > 0 ? `<br>Errors: ${ls.errors.join(', ')}` : '');
+    }
+}
+
+function updateRouterCard(role, health) {
+    document.getElementById(role + '-status').textContent = health.status;
+    document.getElementById(role + '-status').className = 'status-indicator status-' + health.status;
+    document.getElementById(role + '-identity').textContent = 'Identity: ' + (health.identity || '-');
+    document.getElementById(role + '-cpu').textContent = 'CPU: ' + health.cpu_load + '%';
+    document.getElementById(role + '-mem').textContent = 'Memory: ' + health.memory_used_percent + '%';
+    document.getElementById(role + '-uptime').textContent = 'Uptime: ' + (health.uptime || '-');
+    document.getElementById(role + '-version').textContent = 'Version: ' + (health.version || '-');
+}
+
+async function fetchVRRP() {
+    try {
+        const res = await fetch('/api/vrrp');
+        const data = await res.json();
+        updateVRRPTable('master', data.master || []);
+        updateVRRPTable('backup', data.backup || []);
+    } catch(e) {}
+}
+
+function updateVRRPTable(role, items) {
+    const tbody = document.querySelector('#vrrp-' + role + '-table tbody');
+    tbody.innerHTML = items.map(v =>
+        `<tr><td>${v.name||'-'}</td><td>${v.vrid||'-'}</td>` +
+        `<td>${v.priority||'-'}</td><td>${v.running ? (v.master ? 'MASTER':'BACKUP') : 'DOWN'}</td></tr>`
+    ).join('');
+}
+
+async function fetchEvents() {
+    try {
+        const res = await fetch('/api/events?limit=10');
+        const events = await res.json();
+        const el = document.getElementById('events-list');
+        el.innerHTML = events.map(e =>
+            `<div class="event event-${e.cluster_state}">` +
+            `<span class="event-time">${new Date(e.timestamp*1000).toLocaleTimeString()}</span> ` +
+            `<span class="event-state">${e.cluster_state}</span> ` +
+            `<span class="event-action">${e.action}</span> ` +
+            `<span class="event-reason">${e.reason}</span></div>`
+        ).join('');
+    } catch(e) {}
+}
+
+async function triggerSync(dryRun) {
+    if (!dryRun && !confirm('Apply all changes from master to backup?')) return;
+    const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({dry_run: dryRun})
+    });
+    const data = await res.json();
+    alert(dryRun ? `Dry run: ${data.total_changes} changes found` : `Sync complete: ${data.total_changes} changes applied`);
+    fetchStatus();
+}
+
+async function triggerFailover() {
+    if (!confirm('WARNING: This will trigger a manual failover. Continue?')) return;
+    await fetch('/api/failover', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'promote_backup'})
+    });
+    alert('Failover triggered');
+    fetchStatus();
+}
+
+function formatSeconds(s) {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+// Auto-refresh
+fetchStatus();
+fetchVRRP();
+fetchEvents();
+setInterval(fetchStatus, 5000);
+setInterval(fetchVRRP, 10000);
+setInterval(fetchEvents, 10000);
+</script>
+{% endblock %}

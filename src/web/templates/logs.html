@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block content %}
+<h1>Event Log</h1>
+
+<div class="actions-bar">
+    <select id="log-filter" onchange="loadLogs()">
+        <option value="all">All events</option>
+        <option value="sync">Sync only</option>
+        <option value="failover">Failover only</option>
+        <option value="error">Errors only</option>
+    </select>
+    <button class="btn btn-secondary" onclick="loadLogs()">Refresh</button>
+</div>
+
+<div class="card">
+    <div id="log-entries" class="log-viewer"></div>
+</div>
+
+<script>
+async function loadLogs() {
+    try {
+        const res = await fetch('/api/logs?limit=100');
+        const data = await res.json();
+        const el = document.getElementById('log-entries');
+        el.innerHTML = data.logs.map(l =>
+            `<div class="log-entry log-${l.level || 'info'}">` +
+            `<span class="log-time">${l.timestamp || ''}</span> ` +
+            `<span class="log-level">${(l.level || 'info').toUpperCase()}</span> ` +
+            `<span class="log-msg">${l.event || l.message || JSON.stringify(l)}</span></div>`
+        ).join('') || '<p>No logs available</p>';
+    } catch(e) {
+        document.getElementById('log-entries').textContent = 'Error loading logs: ' + e.message;
+    }
+}
+
+loadLogs();
+setInterval(loadLogs, 5000);
+</script>
+{% endblock %}

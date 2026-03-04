@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Config Diff{% endblock %}
+{% block content %}
+<h1>Configuration Diff</h1>
+<p>Compare master vs slave configuration. Changes shown are what would be applied to the slave.</p>
+
+<div class="actions-bar">
+    <button class="btn btn-primary" onclick="loadDiff()">Refresh Diff</button>
+    <button class="btn btn-secondary" onclick="applySyncDryRun()">Dry Run</button>
+    <button class="btn btn-danger" onclick="applySync()">Apply Changes</button>
+</div>
+
+<!-- Group filter toggles -->
+<div class="card" id="group-filters">
+    <h3>Filter by Group</h3>
+    <div class="filter-toggles">
+        <label class="toggle-label"><input type="checkbox" data-filter="all" checked onchange="toggleAllFilters(this)"> <strong>All</strong></label>
+        {% for name, info in section_groups.items() %}
+        <label class="toggle-label"><input type="checkbox" data-filter="{{ name }}" checked onchange="applyFilters()"> {{ info.label }}</label>
+        {% endfor %}
+    </div>
+    <div class="filter-toggles" style="margin-top:.5rem">
+        <label class="toggle-label"><input type="checkbox" id="show-additions" checked onchange="applyFilters()"> Additions</label>
+        <label class="toggle-label"><input type="checkbox" id="show-updates" checked onchange="applyFilters()"> Updates</label>
+        <label class="toggle-label"><input type="checkbox" id="show-removals" checked onchange="applyFilters()"> Removals</label>
+    </div>
+</div>
+
+<!-- Summary badges per group -->
+<div id="group-badges" class="group-badges"></div>
+
+<div id="diff-summary" class="card">
+    <h3>Summary</h3>
+    <div id="diff-summary-content">Click "Refresh Diff" to load</div>
+</div>
+
+<div id="diff-sections"></div>
+
+<script>
+let diffData = null;
+
+async function loadDiff() {
+    document.getElementById('diff-summary-content').textContent = 'Loading...';
+    try {
+        const res = await fetch('/api/diff');
+        diffData = await res.json();
+        renderDiff(diffData);
+    } catch(e) {
+        document.getElementById('diff-summary-content').textContent = 'Error: ' + e.message;
+    }
+}
+
+function renderDiff(data) {
+    document.getElementById('diff-summary-content').innerHTML =
+        `<span class="${data.has_changes ? 'text-warn' : 'text-ok'}">` +
+        `${data.total_changes} total changes across ${data.sections.filter(s=>s.has_changes).length} sections</span>`;
+
+    // Group badges
+    const groupCounts = {};
+    data.sections.forEach(s => {
+        const g = s.group || 'other';
+        if (!groupCounts[g]) groupCounts[g] = 0;
+        if (s.has_changes) groupCounts[g] += s.additions + s.updates + s.removals + (s.moves || 0);
+    });
+    const badges = document.getElementById('group-badges');
+    badges.innerHTML = Object.entries(groupCounts).map(([g, count]) =>
+        count > 0 ? `<span class="badge badge-${g}">${g}: ${count}</span>` : ''
+    ).join(' ');
+
+    renderFilteredSections(data);
+}
+
+function renderFilteredSections(data) {
+    const activeGroups = new Set();
+    document.querySelectorAll('.filter-toggles input[data-filter]').forEach(cb => {
+        if (cb.dataset.filter !== 'all' && cb.checked) activeGroups.add(cb.dataset.filter);
+    });
+    const showAdd = document.getElementById('show-additions').checked;
+    const showUpd = document.getElementById('show-updates').checked;
+    const showRem = document.getElementById('show-removals').checked;
+
+    const filtered = data.sections.filter(s => {
+        if (!s.has_changes) return false;
+        return activeGroups.has(s.group || 'other');
+    });
+
+    const container = document.getElementById('diff-sections');
+    container.innerHTML = filtered.map(s => `
+        <div class="card diff-section" data-group="${s.group}">
+            <h3>${s.name} <span class="badge">${s.summary}</span> <span class="badge badge-sm">${s.group}</span></h3>
+            ${showAdd && s.details.additions.length > 0 ? `
+                <h4 class="text-add">Additions (${s.additions})</h4>
+                <div class="diff-items">${s.details.additions.map(a =>
+                    '<pre class="diff-add">' + JSON.stringify(a.data, null, 2) + '</pre>'
+                ).join('')}</div>
+            ` : ''}
+            ${showUpd && s.details.updates.length > 0 ? `
+                <h4 class="text-warn">Updates (${s.updates})</h4>
+                <div class="diff-items">${s.details.updates.map(u => `
+                    <div class="diff-side-by-side">
+                        <div class="diff-old"><h5>Current (slave)</h5><pre class="diff-remove">${JSON.stringify(u.old, null, 2)}</pre></div>
+                        <div class="diff-new"><h5>Proposed (master)</h5><pre class="diff-add">${JSON.stringify(u.changes, null, 2)}</pre></div>
+                    </div>
+                `).join('')}</div>
+            ` : ''}
+            ${showRem && s.details.removals.length > 0 ? `
+                <h4 class="text-err">Removals (${s.removals})</h4>
+                <div class="diff-items">${s.details.removals.map(r =>
+                    '<pre class="diff-remove">' + JSON.stringify(r.data, null, 2) + '</pre>'
+                ).join('')}</div>
+            ` : ''}
+        </div>
+    `).join('');
+}
+
+function applyFilters() {
+    if (diffData) renderFilteredSections(diffData);
+}
+
+function toggleAllFilters(el) {
+    const checked = el.checked;
+    document.querySelectorAll('.filter-toggles input[data-filter]').forEach(cb => {
+        if (cb.dataset.filter !== 'all') cb.checked = checked;
+    });
+    applyFilters();
+}
+
+async function applySyncDryRun() {
+    const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({dry_run: true})
+    });
+    const data = await res.json();
+    alert(`Dry run complete: ${data.total_changes} changes would be applied`);
+}
+
+async function applySync() {
+    if (!confirm('Apply all changes to backup router?')) return;
+    const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({dry_run: false})
+    });
+    const data = await res.json();
+    alert(data.success ? `Sync complete: ${data.total_changes} changes applied` : `Sync failed: ${data.errors.join(', ')}`);
+    loadDiff();
+}
+</script>
+{% endblock %}
