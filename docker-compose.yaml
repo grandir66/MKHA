@@ -10,9 +10,9 @@ services:
     volumes:
       - ./config:/app/config:ro
     environment:
-      - ROUTER_A_PASSWORD=${ROUTER_A_PASSWORD}
-      - ROUTER_B_PASSWORD=${ROUTER_B_PASSWORD}
-      - MKHA_AUTH_TOKEN=${MKHA_AUTH_TOKEN:-}
+      - ROUTER_A_PASSWORD=${ROUTER_A_PASSWORD:-}
+      - ROUTER_B_PASSWORD=${ROUTER_B_PASSWORD:-}
+      - MKHA_ENCRYPTION_PASSWORD=${MKHA_ENCRYPTION_PASSWORD:-}
     networks:
       - mgmt
 
