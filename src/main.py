@@ -238,6 +238,27 @@ def main() -> None:
     setup_logging(log_level=args.log_level, json_output=args.json_logs)
 
     config = load_config(args.config)
+
+    # Decrypt credentials if an encrypted credentials file is configured
+    if config.credentials_file:
+        import getpass
+        import sys
+
+        from src.utils.crypto import apply_decrypted_credentials, decrypt_credentials
+
+        creds_path = Path(args.config).parent / config.credentials_file
+        if creds_path.exists():
+            import os as _os
+            enc_password = _os.environ.get("MKHA_ENCRYPTION_PASSWORD", "")
+            if not enc_password:
+                enc_password = getpass.getpass("Encryption password: ")
+            try:
+                creds = decrypt_credentials(creds_path.read_bytes(), enc_password)
+                apply_decrypted_credentials(config, creds)
+            except Exception as e:
+                print(f"Failed to decrypt credentials: {e}")
+                sys.exit(1)
+
     orchestrator = HAOrchestrator(config, config_path=args.config)
 
     try:

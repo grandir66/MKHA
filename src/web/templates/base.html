@@ -11,6 +11,7 @@
         <div class="sidebar-header">
             <h2>MKHA</h2>
             <span class="cluster-name">{{ cluster_name }}</span>
+            <span class="app-version">v{{ app_version }}</span>
         </div>
         <ul class="nav-links">
             <li><a href="/" class="{% if active == 'dashboard' %}active{% endif %}">Dashboard</a></li>
@@ -20,6 +21,9 @@
             <li><a href="/setup" class="{% if active == 'setup' %}active{% endif %}">Setup</a></li>
             <li><a href="/logs" class="{% if active == 'logs' %}active{% endif %}">Logs</a></li>
         </ul>
+        <div class="sidebar-footer">
+            <a href="/logout" class="nav-logout">Logout</a>
+        </div>
     </nav>
     <main class="content">
         {% block content %}{% endblock %}

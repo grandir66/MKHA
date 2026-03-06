@@ -1,6 +1,6 @@
 [project]
 name = "mikrotik-ha"
-version = "0.1.0"
+version = "0.51-beta"
 description = "High Availability orchestrator for MikroTik RouterOS 7 router pairs"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,8 @@ dependencies = [
     "sse-starlette>=2.0",
     "rich>=13.0",
     "textual>=0.80",
+    "cryptography>=42.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

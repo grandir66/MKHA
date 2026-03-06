@@ -34,7 +34,12 @@ body {
 .sidebar-header { padding: 0 1.5rem 1.5rem; border-bottom: 1px solid var(--border); }
 .sidebar-header h2 { font-size: 1.5rem; letter-spacing: 2px; }
 .cluster-name { font-size: 0.8rem; color: var(--text-dim); }
-.nav-links { list-style: none; margin-top: 1rem; }
+.app-version { font-size: 0.7rem; color: var(--text-dim); display: block; margin-top: 0.25rem; }
+.sidebar-footer { padding: 1rem 1.5rem; border-top: 1px solid var(--border); margin-top: auto; }
+.nav-logout { color: var(--text-dim); text-decoration: none; font-size: 0.85rem; }
+.nav-logout:hover { color: var(--accent); }
+.sidebar { display: flex; flex-direction: column; }
+.nav-links { list-style: none; margin-top: 1rem; flex: 1; }
 .nav-links li a {
     display: block;
     padding: 0.75rem 1.5rem;
@@ -318,6 +323,30 @@ select { background: var(--bg-card); color: var(--text); border: 1px solid var(-
 .export-comment { color: var(--text-dim); font-style: italic; }
 .export-verb { color: var(--accent); font-weight: 600; }
 .export-key { color: var(--warn); }
+
+/* Login page */
+.login-body { justify-content: center; align-items: center; }
+.login-container { width: 100%; max-width: 380px; padding: 1rem; }
+.login-card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 2rem; text-align: center;
+}
+.login-card h1 { font-size: 2rem; letter-spacing: 3px; margin-bottom: 0.25rem; }
+.login-subtitle { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 1.5rem; }
+.login-error {
+    background: rgba(244,67,54,0.15); border: 1px solid var(--err); border-radius: 4px;
+    padding: 0.5rem; margin-bottom: 1rem; font-size: 0.85rem; color: var(--err);
+}
+.login-btn { width: 100%; margin-top: 0.5rem; padding: 0.65rem; font-size: 1rem; }
+.login-version { color: var(--text-dim); font-size: 0.7rem; margin-top: 1.5rem; }
+
+/* Alert banner */
+.alert { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
+.alert-warn { background: rgba(255,152,0,0.12); border: 1px solid var(--warn); color: var(--warn); }
+.alert-ok { background: rgba(76,175,80,0.12); border: 1px solid var(--ok); color: var(--ok); }
+
+/* Text dim helper */
+.text-dim { color: var(--text-dim); font-size: 0.8rem; }
 
 /* Responsive */
 @media (max-width: 900px) {

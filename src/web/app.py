@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import io
 import json
+import secrets as _secrets
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 from src.api.routeros_client import (
     RouterOSClient,
@@ -17,16 +21,21 @@ from src.api.routeros_client import (
     RouterOSNotMikroTikError,
 )
 from src.api.ssh_client import MikroTikSSHClient, SSHError
-from src.utils.config import SECTION_GROUPS, HAConfig, save_config
+from src.utils.config import SECTION_GROUPS, AuthUser, HAConfig, save_config
+from src.version import __version__
 
 if TYPE_CHECKING:
     from src.main import HAOrchestrator
 
-app = FastAPI(title="MikroTik HA Manager", version="0.2.0")
+app = FastAPI(title="MikroTik HA Manager", version=__version__)
+
+# Session middleware for authentication
+app.add_middleware(SessionMiddleware, secret_key=_secrets.token_hex(32), session_cookie="mkha_session")
 
 _orchestrator: HAOrchestrator | None = None
 
 templates = Jinja2Templates(directory="src/web/templates")
+templates.env.globals["app_version"] = __version__
 
 
 def set_orchestrator(orchestrator: HAOrchestrator) -> None:
@@ -41,6 +50,31 @@ def get_orchestrator() -> "HAOrchestrator":
 
 
 # ============================================================
+# Authentication middleware
+# ============================================================
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Redirect unauthenticated users to /login when auth_users are configured."""
+    # Skip auth if orchestrator not ready or no users configured
+    if _orchestrator is None or not _orchestrator.config.web.auth_users:
+        return await call_next(request)
+
+    path = request.url.path
+    # Public paths
+    if path in ("/login", "/health") or path.startswith("/static"):
+        return await call_next(request)
+
+    user = request.session.get("user")
+    if not user:
+        if path.startswith("/api/"):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return RedirectResponse("/login", status_code=302)
+
+    return await call_next(request)
+
+
+# ============================================================
 # Health endpoint (quorum witness)
 # ============================================================
 
@@ -52,6 +86,41 @@ async def health_endpoint():
         "cluster_state": orch.quorum.cluster_state.value,
         "uptime": orch.uptime_seconds,
     }
+
+
+# ============================================================
+# Login / Logout
+# ============================================================
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request, "error": ""})
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    from src.utils.auth import verify_password
+
+    form = await request.form()
+    username = str(form.get("username", ""))
+    password = str(form.get("password", ""))
+
+    orch = get_orchestrator()
+    for user in orch.config.web.auth_users:
+        if user.username == username and verify_password(password, user.password_hash, user.salt):
+            request.session["user"] = username
+            return RedirectResponse("/", status_code=302)
+
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "error": "Invalid credentials",
+    })
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=302)
 
 
 # ============================================================
@@ -1009,3 +1078,156 @@ async def api_provision_status():
     if report:
         return {"running": True, "report": report.to_dict()}
     return {"running": False, "report": None}
+
+
+# ============================================================
+# API: User Management (authentication)
+# ============================================================
+
+@app.post("/api/setup/auth/create-user")
+async def api_create_user(request: Request):
+    """Create or update a web UI user."""
+    from src.utils.auth import hash_password
+
+    orch = get_orchestrator()
+    body = await request.json()
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+
+    if not username or not password:
+        raise HTTPException(400, "Username and password required")
+    if len(password) < 4:
+        raise HTTPException(400, "Password must be at least 4 characters")
+
+    pw_hash, salt = hash_password(password)
+    new_user = AuthUser(username=username, password_hash=pw_hash, salt=salt)
+
+    # Update existing or add new
+    for i, user in enumerate(orch.config.web.auth_users):
+        if user.username == username:
+            orch.config.web.auth_users[i] = new_user
+            save_config(orch.config, orch.config_path)
+            return {"status": "ok", "message": f"User '{username}' updated"}
+
+    orch.config.web.auth_users.append(new_user)
+    save_config(orch.config, orch.config_path)
+    return {"status": "ok", "message": f"User '{username}' created"}
+
+
+@app.delete("/api/setup/auth/delete-user/{username}")
+async def api_delete_user(username: str):
+    """Delete a web UI user."""
+    orch = get_orchestrator()
+    before = len(orch.config.web.auth_users)
+    orch.config.web.auth_users = [
+        u for u in orch.config.web.auth_users if u.username != username
+    ]
+    if len(orch.config.web.auth_users) == before:
+        raise HTTPException(404, f"User '{username}' not found")
+    save_config(orch.config, orch.config_path)
+    return {"status": "ok", "message": f"User '{username}' deleted"}
+
+
+@app.get("/api/setup/auth/users")
+async def api_list_users():
+    """List configured auth users (without password hashes)."""
+    orch = get_orchestrator()
+    return {
+        "users": [{"username": u.username} for u in orch.config.web.auth_users],
+        "auth_enabled": len(orch.config.web.auth_users) > 0,
+    }
+
+
+# ============================================================
+# API: Credential Encryption
+# ============================================================
+
+@app.post("/api/setup/encrypt-credentials")
+async def api_encrypt_credentials(request: Request):
+    """Encrypt current router passwords and save to credentials file."""
+    from src.utils.crypto import collect_sensitive_fields, encrypt_credentials
+
+    orch = get_orchestrator()
+    body = await request.json()
+    enc_password = str(body.get("password", ""))
+    if not enc_password:
+        raise HTTPException(400, "Encryption password required")
+    if len(enc_password) < 4:
+        raise HTTPException(400, "Encryption password must be at least 4 characters")
+
+    creds = collect_sensitive_fields(orch.config)
+    if not creds:
+        raise HTTPException(400, "No sensitive fields to encrypt")
+
+    encrypted = encrypt_credentials(creds, enc_password)
+
+    config_dir = Path(orch.config_path).parent
+    creds_filename = ".credentials.enc"
+    creds_path = config_dir / creds_filename
+    creds_path.write_bytes(encrypted)
+
+    orch.config.credentials_file = creds_filename
+    save_config(orch.config, orch.config_path)
+
+    return {"status": "ok", "credentials_count": len(creds), "file": creds_filename}
+
+
+@app.get("/api/setup/encryption-status")
+async def api_encryption_status():
+    """Check whether credentials are encrypted."""
+    orch = get_orchestrator()
+    config_dir = Path(orch.config_path).parent
+    creds_file = orch.config.credentials_file
+    has_file = bool(creds_file) and (config_dir / creds_file).exists()
+    return {
+        "encrypted": has_file,
+        "credentials_file": creds_file if has_file else None,
+    }
+
+
+# ============================================================
+# API: Backup & Restore
+# ============================================================
+
+@app.get("/api/backup/create")
+async def api_backup_create(password: str = ""):
+    """Create and download a full configuration backup."""
+    from src.utils.backup import create_backup
+
+    orch = get_orchestrator()
+    zip_bytes, filename = await create_backup(orch, encryption_password=password)
+
+    return StreamingResponse(
+        io.BytesIO(zip_bytes),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.post("/api/backup/validate")
+async def api_backup_validate(request: Request):
+    """Validate an uploaded backup file."""
+    from src.utils.backup import validate_backup
+
+    form = await request.form()
+    upload = form.get("file")
+    if not upload:
+        raise HTTPException(400, "No file uploaded")
+    content = await upload.read()
+    return validate_backup(content)
+
+
+@app.post("/api/backup/restore")
+async def api_backup_restore(request: Request):
+    """Restore configuration from an uploaded backup file."""
+    from src.utils.backup import restore_backup
+
+    orch = get_orchestrator()
+    form = await request.form()
+    upload = form.get("file")
+    if not upload:
+        raise HTTPException(400, "No file uploaded")
+    content = await upload.read()
+    enc_password = str(form.get("encryption_password", ""))
+    result = await restore_backup(content, orch, encryption_password=enc_password)
+    return {"status": "ok", **result}

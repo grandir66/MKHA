@@ -137,6 +137,67 @@
     </table>
 </div>
 
+<!-- Security (Authentication) -->
+<div class="card">
+    <h3>Security</h3>
+    <div id="auth-status"></div>
+    <div class="form-row" style="margin-top:0.75rem">
+        <div class="form-group" style="flex:1">
+            <label>Username</label>
+            <input type="text" id="auth-username" placeholder="admin">
+        </div>
+        <div class="form-group" style="flex:1">
+            <label>Password</label>
+            <input type="password" id="auth-password" placeholder="Enter password">
+        </div>
+        <button class="btn btn-primary" onclick="createUser()" style="height:fit-content">Create / Update User</button>
+    </div>
+    <div id="auth-users" style="margin-top:0.75rem"></div>
+    <div id="auth-result" class="test-result"></div>
+</div>
+
+<!-- Credential Encryption -->
+<div class="card">
+    <h3>Credential Encryption</h3>
+    <div id="enc-status"></div>
+    <p class="text-dim" style="margin-bottom:0.75rem">Encrypt router passwords in a separate file. Requires a master password at startup.</p>
+    <div class="form-row">
+        <div class="form-group" style="flex:1">
+            <label>Encryption Password</label>
+            <input type="password" id="enc-password" placeholder="Enter encryption password">
+        </div>
+        <button class="btn btn-primary" onclick="encryptCredentials()" style="height:fit-content">Encrypt Credentials</button>
+    </div>
+    <div id="enc-result" class="test-result"></div>
+</div>
+
+<!-- Backup & Restore -->
+<div class="card">
+    <h3>Backup & Restore</h3>
+    <p class="text-dim" style="margin-bottom:0.75rem">Download a full config backup (zip) or restore from a previous backup.</p>
+    <div class="form-row" style="margin-bottom:1rem">
+        <div class="form-group" style="flex:1">
+            <label>Backup Password (optional, encrypts credentials in backup)</label>
+            <input type="password" id="backup-password" placeholder="Leave empty for unencrypted backup">
+        </div>
+        <button class="btn btn-primary" onclick="downloadBackup()" style="height:fit-content">Download Backup</button>
+    </div>
+    <hr style="border-color:var(--border);margin-bottom:1rem">
+    <div class="form-group">
+        <label>Restore from Backup</label>
+        <input type="file" id="restore-file" accept=".zip" style="color:var(--text);font-size:0.85rem">
+    </div>
+    <div class="form-row">
+        <div class="form-group" style="flex:1">
+            <label>Restore Password (if backup is encrypted)</label>
+            <input type="password" id="restore-password" placeholder="Leave empty if no encryption">
+        </div>
+        <button class="btn btn-secondary" onclick="validateBackup()" style="height:fit-content">Validate</button>
+        <button class="btn btn-danger" onclick="restoreBackup()" style="height:fit-content">Restore</button>
+    </div>
+    <div id="backup-result" class="test-result"></div>
+</div>
+
 <script>
 /* ---- Section metadata ---- */
 const SEC_LABELS = {
@@ -970,10 +1031,127 @@ async function loadVariables() {
     } catch(e) {}
 }
 
+/* ---- Auth Management ---- */
+async function loadAuthStatus() {
+    try {
+        const res = await fetch('/api/setup/auth/users');
+        const data = await res.json();
+        const el = document.getElementById('auth-status');
+        if (!data.auth_enabled) {
+            el.innerHTML = '<div class="alert alert-warn">No authentication configured. Anyone with network access can manage this cluster.</div>';
+        } else {
+            el.innerHTML = '<div class="alert alert-ok">Authentication enabled — ' + data.users.length + ' user(s) configured.</div>';
+        }
+        const usersEl = document.getElementById('auth-users');
+        if (data.users.length > 0) {
+            usersEl.innerHTML = '<strong style="font-size:0.85rem">Users:</strong> ' +
+                data.users.map(u =>
+                    `<span class="badge" style="margin-left:0.3rem">${u.username} <a href="#" onclick="deleteUser('${u.username}');return false" style="color:var(--err);text-decoration:none;margin-left:0.3rem">x</a></span>`
+                ).join('');
+        } else {
+            usersEl.innerHTML = '';
+        }
+    } catch(e) {}
+}
+async function createUser() {
+    const username = document.getElementById('auth-username').value.trim();
+    const password = document.getElementById('auth-password').value;
+    if (!username || !password) { document.getElementById('auth-result').innerHTML = '<span class="text-err">Username and password required</span>'; return; }
+    try {
+        const res = await fetch('/api/setup/auth/create-user', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username, password})
+        });
+        const data = await res.json();
+        document.getElementById('auth-result').innerHTML = res.ok ?
+            `<span class="text-ok">${data.message}</span>` :
+            `<span class="text-err">${data.detail || data.message}</span>`;
+        if (res.ok) { document.getElementById('auth-password').value = ''; loadAuthStatus(); }
+    } catch(e) { document.getElementById('auth-result').innerHTML = '<span class="text-err">Error: ' + e + '</span>'; }
+}
+async function deleteUser(username) {
+    if (!confirm('Delete user ' + username + '?')) return;
+    try {
+        await fetch('/api/setup/auth/delete-user/' + username, {method: 'DELETE'});
+        loadAuthStatus();
+    } catch(e) {}
+}
+
+/* ---- Encryption ---- */
+async function loadEncStatus() {
+    try {
+        const res = await fetch('/api/setup/encryption-status');
+        const data = await res.json();
+        const el = document.getElementById('enc-status');
+        el.innerHTML = data.encrypted ?
+            '<div class="alert alert-ok">Credentials encrypted in <code>' + data.credentials_file + '</code></div>' :
+            '<div class="alert alert-warn">Credentials are stored in plaintext in ha_config.yaml.</div>';
+    } catch(e) {}
+}
+async function encryptCredentials() {
+    const password = document.getElementById('enc-password').value;
+    if (!password) { document.getElementById('enc-result').innerHTML = '<span class="text-err">Password required</span>'; return; }
+    try {
+        const res = await fetch('/api/setup/encrypt-credentials', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({password})
+        });
+        const data = await res.json();
+        document.getElementById('enc-result').innerHTML = res.ok ?
+            `<span class="text-ok">Encrypted ${data.credentials_count} credential(s) to ${data.file}</span>` :
+            `<span class="text-err">${data.detail || 'Error'}</span>`;
+        if (res.ok) { document.getElementById('enc-password').value = ''; loadEncStatus(); }
+    } catch(e) { document.getElementById('enc-result').innerHTML = '<span class="text-err">Error: ' + e + '</span>'; }
+}
+
+/* ---- Backup & Restore ---- */
+function downloadBackup() {
+    const pw = document.getElementById('backup-password').value;
+    const url = '/api/backup/create' + (pw ? '?password=' + encodeURIComponent(pw) : '');
+    window.location.href = url;
+}
+async function validateBackup() {
+    const fileInput = document.getElementById('restore-file');
+    if (!fileInput.files.length) { document.getElementById('backup-result').innerHTML = '<span class="text-err">Select a file first</span>'; return; }
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    try {
+        const res = await fetch('/api/backup/validate', {method: 'POST', body: form});
+        const data = await res.json();
+        if (data.valid) {
+            const meta = data.meta || {};
+            document.getElementById('backup-result').innerHTML =
+                `<span class="text-ok">Valid backup</span> — ` +
+                `Version: ${meta.mkha_version || '?'}, Created: ${meta.created_at || '?'}, ` +
+                `Files: ${data.files.length}, Encrypted credentials: ${data.has_credentials ? 'Yes' : 'No'}`;
+        } else {
+            document.getElementById('backup-result').innerHTML = '<span class="text-err">Invalid backup file (missing ha_config.yaml)</span>';
+        }
+    } catch(e) { document.getElementById('backup-result').innerHTML = '<span class="text-err">Error: ' + e + '</span>'; }
+}
+async function restoreBackup() {
+    const fileInput = document.getElementById('restore-file');
+    if (!fileInput.files.length) { document.getElementById('backup-result').innerHTML = '<span class="text-err">Select a file first</span>'; return; }
+    if (!confirm('Restore will overwrite the current configuration. Continue?')) return;
+    const form = new FormData();
+    form.append('file', fileInput.files[0]);
+    form.append('encryption_password', document.getElementById('restore-password').value);
+    try {
+        const res = await fetch('/api/backup/restore', {method: 'POST', body: form});
+        const data = await res.json();
+        document.getElementById('backup-result').innerHTML = res.ok ?
+            `<span class="text-ok">Restored: ${data.restored_files.join(', ')}</span>` :
+            `<span class="text-err">${data.detail || 'Restore failed'}</span>`;
+        if (res.ok) { loadSetupConfig(); loadAuthStatus(); loadEncStatus(); }
+    } catch(e) { document.getElementById('backup-result').innerHTML = '<span class="text-err">Error: ' + e + '</span>'; }
+}
+
 /* ---- Init ---- */
 loadSetupConfig();
 loadSectionGroups();
 loadVariables();
+loadAuthStatus();
+loadEncStatus();
 // Auto-load live data from connected routers
 refreshRouterInfo();
 </script>

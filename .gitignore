@@ -30,6 +30,7 @@ htmlcov/
 config/ha_config.yaml
 config/router_a.yaml
 config/router_b.yaml
+*.credentials.enc
 
 # Claude Code project files
 .claude/

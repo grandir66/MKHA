@@ -9,3 +9,5 @@ jinja2>=3.1
 sse-starlette>=2.0
 rich>=13.0
 textual>=0.80
+cryptography>=42.0
+python-multipart>=0.0.9

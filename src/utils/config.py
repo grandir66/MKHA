@@ -150,19 +150,20 @@ class SyncConfig(BaseModel):
         return self
 
 
+class AuthUser(BaseModel):
+    """A web UI user (password stored as PBKDF2-SHA256 hash)."""
+
+    username: str
+    password_hash: str
+    salt: str
+
+
 class WebConfig(BaseModel):
     """Web UI configuration."""
 
     host: str = "0.0.0.0"
     port: int = 8080
-    auth_token: str = ""
-    auth_token_env: str = "MKHA_AUTH_TOKEN"
-
-    @model_validator(mode="after")
-    def resolve_token(self) -> "WebConfig":
-        if self.auth_token_env and not self.auth_token:
-            self.auth_token = os.environ.get(self.auth_token_env, "")
-        return self
+    auth_users: list[AuthUser] = Field(default_factory=list)
 
 
 class NotificationsConfig(BaseModel):
@@ -209,6 +210,7 @@ class HAConfig(BaseModel):
     web: WebConfig = Field(default_factory=WebConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     provisioning: ProvisioningConfig = Field(default_factory=ProvisioningConfig)
+    credentials_file: str = ""
 
 
 def load_config(config_path: str | Path) -> HAConfig:
@@ -227,17 +229,18 @@ def save_config(config: HAConfig, config_path: str | Path) -> None:
     """Save the HA configuration to a YAML file."""
     config_path = Path(config_path)
     data = config.model_dump(exclude_defaults=False)
-    # Handle password storage:
-    # - If api_password_env is set, use env var and strip plaintext password
-    # - If api_password_env is empty but api_password is set, keep plaintext
+
     for role in ("master", "backup"):
         router = data["routers"][role]
-        if router.get("api_password_env"):
-            # Using env var — don't store plaintext password in YAML
+        if data.get("credentials_file"):
+            # Encrypted mode — strip all plaintext passwords from YAML
+            router.pop("api_password", None)
+            router.pop("api_password_env", None)
+        elif router.get("api_password_env"):
             router.pop("api_password", None)
         else:
-            # No env var — keep the password (entered via UI)
             router.pop("api_password_env", None)
+
     data["sync"].pop("sections", None)  # Derived from enabled_groups
 
     with open(config_path, "w") as f:
