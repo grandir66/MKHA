@@ -55,21 +55,23 @@ def decrypt_credentials(file_bytes: bytes, password: str) -> dict[str, str]:
     return json.loads(decrypted)
 
 
-def collect_sensitive_fields(config: object) -> dict[str, str]:
+def collect_sensitive_fields(config: "HAConfig") -> dict[str, str]:
     """Extract all sensitive fields from an HAConfig into a flat dict."""
+    from src.utils.config import HAConfig
+
     sensitive: dict[str, str] = {}
     for role in ("master", "backup"):
         router = getattr(config.routers, role)
         if router.api_password:
             sensitive[f"routers.{role}.api_password"] = router.api_password
-    if config.notifications.telegram_bot_token:  # type: ignore[union-attr]
-        sensitive["notifications.telegram_bot_token"] = config.notifications.telegram_bot_token  # type: ignore[union-attr]
-    if config.notifications.webhook_url:  # type: ignore[union-attr]
-        sensitive["notifications.webhook_url"] = config.notifications.webhook_url  # type: ignore[union-attr]
+    if config.notifications.telegram_bot_token:
+        sensitive["notifications.telegram_bot_token"] = config.notifications.telegram_bot_token
+    if config.notifications.webhook_url:
+        sensitive["notifications.webhook_url"] = config.notifications.webhook_url
     return sensitive
 
 
-def apply_decrypted_credentials(config: object, credentials: dict[str, str]) -> None:
+def apply_decrypted_credentials(config: "HAConfig", credentials: dict[str, str]) -> None:
     """Apply decrypted credentials back onto an HAConfig object."""
     for key, value in credentials.items():
         parts = key.split(".")

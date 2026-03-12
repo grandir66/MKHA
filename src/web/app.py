@@ -29,8 +29,32 @@ if TYPE_CHECKING:
 
 app = FastAPI(title="MikroTik HA Manager", version=__version__)
 
+
+def _load_or_create_session_secret() -> str:
+    """Load session secret from file, or create and persist a new one.
+
+    This ensures sessions survive restarts and are consistent across workers.
+    """
+    secret_path = Path("config/.session_secret")
+    try:
+        if secret_path.exists():
+            secret = secret_path.read_text().strip()
+            if len(secret) >= 32:
+                return secret
+    except OSError:
+        pass
+    secret = _secrets.token_hex(32)
+    try:
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        secret_path.write_text(secret)
+        secret_path.chmod(0o600)
+    except OSError:
+        pass  # Fall back to ephemeral secret if we can't persist
+    return secret
+
+
 # Session middleware for authentication
-app.add_middleware(SessionMiddleware, secret_key=_secrets.token_hex(32), session_cookie="mkha_session")
+app.add_middleware(SessionMiddleware, secret_key=_load_or_create_session_secret(), session_cookie="mkha_session")
 
 _orchestrator: HAOrchestrator | None = None
 
@@ -294,11 +318,21 @@ async def api_sync(request: Request):
 # API: Failover
 # ============================================================
 
+_ALLOWED_FAILOVER_ACTIONS = {"promote_backup", "demote_master", "restore_master"}
+
+
 @app.post("/api/failover")
 async def api_failover(request: Request):
     orch = get_orchestrator()
     body = await request.json()
-    action = body.get("action", "promote_backup")
+    action = body.get("action", "")
+
+    if action not in _ALLOWED_FAILOVER_ACTIONS:
+        raise HTTPException(
+            400,
+            f"Invalid action '{action}'. "
+            f"Allowed: {', '.join(sorted(_ALLOWED_FAILOVER_ACTIONS))}",
+        )
 
     from src.quorum.manager import FailoverAction, QuorumDecision
     fa = FailoverAction(action)
@@ -332,9 +366,32 @@ async def api_get_router_config(router: str, section: Optional[str] = None):
     return result
 
 
+_ALLOWED_CONFIG_PATHS = {
+    "interface/vrrp", "system/identity", "system/ntp/client",
+    "ip/dns", "ip/address", "ip/route",
+    "interface/bridge", "interface/bridge/port", "interface/bridge/vlan",
+    "interface/vlan", "interface/bonding",
+    "interface/list", "interface/list/member",
+    "ip/firewall/filter", "ip/firewall/nat", "ip/firewall/mangle",
+    "ip/firewall/raw", "ip/firewall/address-list",
+    "ip/pool", "ip/dhcp-server", "ip/dhcp-server/network",
+    "ip/dhcp-server/lease", "ip/dns/static",
+    "ip/ipsec/profile", "ip/ipsec/proposal", "ip/ipsec/peer",
+    "ip/ipsec/identity", "ip/ipsec/policy",
+    "interface/wireguard", "interface/wireguard/peers",
+    "system/script", "system/scheduler",
+    "queue/simple", "queue/tree",
+}
+
+
 @app.patch("/api/config/{router}/{path:path}")
 async def api_set_router_config(router: str, path: str, request: Request):
+    if path not in _ALLOWED_CONFIG_PATHS:
+        raise HTTPException(403, f"Path '{path}' is not allowed for modification")
+
     orch = get_orchestrator()
+    if router not in ("master", "backup"):
+        raise HTTPException(400, f"Unknown router: {router}")
     client = orch.master_client if router == "master" else orch.slave_client
     body = await request.json()
     item_id = body.pop(".id", None)
@@ -518,7 +575,7 @@ async def api_config_export(role: str):
             finally:
                 ssh.close()
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         export_text = await loop.run_in_executor(None, _ssh_export)
 
         if export_text:
@@ -602,7 +659,8 @@ async def api_config_export(role: str):
 @app.get("/api/logs")
 async def api_logs(limit: int = 50):
     orch = get_orchestrator()
-    return {"logs": orch.log_buffer[-limit:], "total": len(orch.log_buffer)}
+    logs = list(orch.log_buffer)[-limit:]
+    return {"logs": logs, "total": len(orch.log_buffer)}
 
 
 @app.get("/api/events")
@@ -876,7 +934,7 @@ async def api_setup_router_info(role: str):
     # --- SSH data ---
     if router_cfg.ssh_enabled:
         import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             ssh = MikroTikSSHClient.from_api_url(
                 api_url=router_cfg.api_url,

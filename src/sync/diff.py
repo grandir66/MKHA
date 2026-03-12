@@ -94,21 +94,19 @@ def _compute_item_diff(
     """Compute the changed fields between master and slave items.
 
     Returns a dict of {key: master_value} for keys that differ.
+    All values are compared as strings to match RouterOS REST API semantics.
+    Missing keys on the slave side are treated as different (None sentinel).
     """
     ignore = SYSTEM_KEYS | (ignore_keys or set())
+    _MISSING = object()
     changes: dict[str, Any] = {}
 
     for key, master_val in master_item.items():
         if key in ignore:
             continue
-        slave_val = slave_item.get(key)
-        if str(master_val) != str(slave_val):
+        slave_val = slave_item.get(key, _MISSING)
+        if slave_val is _MISSING or str(master_val) != str(slave_val):
             changes[key] = master_val
-
-    # Check for keys present on master but missing on slave
-    for key in master_item:
-        if key not in ignore and key not in slave_item:
-            changes[key] = master_item[key]
 
     return changes
 

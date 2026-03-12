@@ -77,17 +77,19 @@ class SyncEngine:
         config: HAConfig,
         master_client: RouterOSClient,
         slave_client: RouterOSClient,
+        config_dir: str = "config",
     ):
         self.config = config
         self.master_client = master_client
         self.slave_client = slave_client
+        self.config_dir = config_dir
         self._lock = asyncio.Lock()
         self._sections: list[SyncSection] = []
         self._translator: VariableTranslator | None = None
 
     async def initialize(self) -> None:
         """Load variables and initialize section handlers."""
-        config_dir = "config"
+        config_dir = self.config_dir
 
         master_vars = RouterVariables()
         slave_vars = RouterVariables()
@@ -162,7 +164,7 @@ class SyncEngine:
             report = SyncReport(
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
-            start = asyncio.get_event_loop().time()
+            start = asyncio.get_running_loop().time()
 
             try:
                 # Compute diffs
@@ -170,7 +172,7 @@ class SyncEngine:
 
                 if dry_run:
                     report.success = True
-                    report.duration_ms = (asyncio.get_event_loop().time() - start) * 1000
+                    report.duration_ms = (asyncio.get_running_loop().time() - start) * 1000
                     return report
 
                 # Apply changes section by section
@@ -203,7 +205,7 @@ class SyncEngine:
                 report.errors.append(f"Sync failed: {e}")
                 await log.aerror("sync_failed", error=str(e))
 
-            report.duration_ms = (asyncio.get_event_loop().time() - start) * 1000
+            report.duration_ms = (asyncio.get_running_loop().time() - start) * 1000
             await log.ainfo("sync_complete", report=report.summary())
             return report
 

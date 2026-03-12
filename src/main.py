@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +44,14 @@ class HAOrchestrator:
             timeout=config.quorum.health_check.api_timeout_ms / 1000,
         )
 
+        # Derive config directory from config file path
+        self._config_dir = str(Path(config_path).parent)
+
         # Components
-        self.sync_engine = SyncEngine(config, self.master_client, self.slave_client)
+        self.sync_engine = SyncEngine(
+            config, self.master_client, self.slave_client,
+            config_dir=self._config_dir,
+        )
         self.quorum = QuorumManager(config, self.master_client, self.slave_client)
         self.vrrp_controller = VRRPController(config, self.master_client, self.slave_client)
         self.notifier = Notifier(config.notifications)
@@ -54,14 +61,21 @@ class HAOrchestrator:
 
         # State
         self.last_sync_report: SyncReport | None = None
-        self.log_buffer: list[dict[str, Any]] = []
-        self._max_log_buffer = 500
+        self.log_buffer: deque[dict[str, Any]] = deque(maxlen=500)
         self._running = False
         self._previous_cluster_state = ClusterState.INITIALIZING
 
     @property
     def uptime_seconds(self) -> int:
         return int(time.time() - self._start_time)
+
+    @property
+    def _client_consumers(self) -> list[Any]:
+        """All components that hold references to master/slave clients."""
+        return [
+            self.sync_engine, self.quorum,
+            self.vrrp_controller, self.provisioning_engine,
+        ]
 
     async def reconnect_clients(self) -> None:
         """Recreate RouterOS clients from current config (after config change)."""
@@ -82,14 +96,9 @@ class HAOrchestrator:
         )
 
         # Rewire all components with new clients
-        self.sync_engine.master_client = self.master_client
-        self.sync_engine.slave_client = self.slave_client
-        self.quorum.master_client = self.master_client
-        self.quorum.slave_client = self.slave_client
-        self.vrrp_controller.master_client = self.master_client
-        self.vrrp_controller.slave_client = self.slave_client
-        self.provisioning_engine.master_client = self.master_client
-        self.provisioning_engine.slave_client = self.slave_client
+        for component in self._client_consumers:
+            component.master_client = self.master_client
+            component.slave_client = self.slave_client
 
         await self.sync_engine.initialize()
         await self.provisioning_engine.initialize()
@@ -97,8 +106,6 @@ class HAOrchestrator:
     def _add_log(self, event: str, level: str = "info", **kwargs: Any) -> None:
         entry = {"event": event, "level": level, "timestamp": time.time(), **kwargs}
         self.log_buffer.append(entry)
-        if len(self.log_buffer) > self._max_log_buffer:
-            self.log_buffer = self.log_buffer[-self._max_log_buffer:]
 
     async def _handle_failover(
         self, action: FailoverAction, decision: QuorumDecision
@@ -201,12 +208,15 @@ class HAOrchestrator:
         )
         web_server = uvicorn.Server(web_config)
 
-        # Run all loops concurrently
-        await asyncio.gather(
-            self._run_health_loop(),
-            self._run_sync_loop(),
-            web_server.serve(),
-        )
+        # Run all loops concurrently, ensure cleanup on exit
+        try:
+            await asyncio.gather(
+                self._run_health_loop(),
+                self._run_sync_loop(),
+                web_server.serve(),
+            )
+        finally:
+            await self.stop()
 
     async def stop(self) -> None:
         """Stop the orchestrator."""
@@ -264,7 +274,7 @@ def main() -> None:
     try:
         asyncio.run(orchestrator.start())
     except KeyboardInterrupt:
-        asyncio.run(orchestrator.stop())
+        pass  # Cleanup handled by finally block in start()
 
 
 if __name__ == "__main__":
